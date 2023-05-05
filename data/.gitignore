@@ -1,0 +1,5 @@
+**.d/
+*.hdf
+*.mzml
+*.mzML*
+*.zip

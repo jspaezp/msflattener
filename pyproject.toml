@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm", "setuptools-rust", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msflattener"
+authors = [
+    {name = "Sebastian Paez", email = "spaez@talus.bio"},
+]
+description = "A simple tool to flatten timsTOF data"
+requires-python = ">=3.9,<=3.12"
+keywords = ["proteomics", "dia", "mass spec"]
+license = {text = "Apache 2.0"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "alphatims >= 1.0.7",
+    "polars >= 0.17.11",
+    "pandas >= 2.0.0",
+    "numpy >= 1.23.5",
+    "tqdm >= 4.64.1",
+    "loguru >= 0.6.0",
+    "rich-click >= 1.6.0",
+    "fastparquet >= 2022.11.0",
+    "pyarrow >= 10.0.1",
+    "psims >= 1.2.4",
+    "scipy >= 1.10.0",
+]
+dynamic = ["version"]
+
+[project.readme]
+file = "README.md"
+content-type = "text/markdown"
+
+[project.urls]
+Homepage = "https://github.com/jspaez/msflattener"
+Documentation = "https://jspaezp.github.io/msflattener"
+
+[project.optional-dependencies]
+test = [
+    "pytest >= 7.2.0",
+    "pytest-datadir >= 1.4.1",
+    "pytest-cov >= 4.0.0",
+]
+profiling = [
+    "line_profiler",
+]
+build = [
+    "build",
+]
+docs = [
+    "nbconvert",
+    "nbclient",
+]
+
+
+[tool.setuptools.packages.find]
+include = ["msflattener"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "--doctest-modules -v"
+testpaths = [
+    "msflattener",
+    "tests",
+]
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "C", "I", "D", "UP", "N", "ANN", "T20"]
+
+# ANN101 Missing type annotation for `self` in method
+# D213 Multi-line docstring summary should start at the second lin
+# D203 1 blank line required before class docstring
+# D100 Missing docstring in public module
+# ANN102 Missing type annotation for `cls` in classmethod
+# D401 First line of docstring should be in imperative mood
+ignore = ["D213", "ANN101", "D203", "D100", "ANN102", "D401"]
+
+
+[tool.ruff.per-file-ignores]
+"*tests/*.py" = ["ANN"]
+# D104 is missing docstring in public package
+"**__init__.py" = ["D104"]
+
+# ANN001 Missing type annotation for function argument
+# Ignoring in the cli since it is redundant with the click options
+# D103 Missing docstring in public function
+# Information in the help of the click command.
+"msflattener/cli.py" = ["ANN001", "D103"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39', 'py310']
+preview = true
+

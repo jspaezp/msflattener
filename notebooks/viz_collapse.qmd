@@ -1,0 +1,55 @@
+---
+title: "Visualizing centroiding"
+format: gfm
+jupyter: python3
+---
+
+```{python}
+from msflattener.bruker import centroid_ims, get_timstof_data
+import matplotlib.pyplot as plt
+import polars as pl
+import numpy as np
+
+out = get_timstof_data("data/20221016_PRO1_LSVD_00_30-0051_100ng_Regular_P1-C6_1_11234.hdf", progbar=False, safe=False)
+print(out)
+
+centroided_out = centroid_ims(out, min_neighbors=2, mz_distance=0.02, ims_distance=0.02, progbar=False)
+print(centroided_out)
+```
+
+```{python}
+promise = pl.col("rt_values").is_between(195, 205) & pl.col("quad_low_mz_values").is_between(576, 577)
+collapsed = centroided_out.filter(promise)
+orig = out.filter(promise)
+
+print(orig)
+print(collapsed)
+```
+
+
+```{python}
+for x in collapsed["rt_values"]:
+    tmp_orig = orig.filter(pl.col("rt_values").is_between(x - 0.001, x + 0.001))
+    tmp_collapsed = collapsed.filter(pl.col("rt_values").is_between(x - 0.001, x + 0.001))
+
+    plt.scatter(
+        np.concatenate(tmp_orig["mz_values"]),
+        np.concatenate([[x]*len(y) for y, x in zip(tmp_orig["mz_values"], tmp_orig["mobility_values"])]),
+        s = np.sqrt(np.concatenate(tmp_orig["corrected_intensity_values"])),
+        alpha = 0.1,
+        c = "black",
+    )
+    plt.scatter(
+        np.concatenate(tmp_collapsed["mz_values"]),
+        np.concatenate(tmp_collapsed["mobility_values"]),
+        c = np.concatenate(tmp_collapsed["corrected_intensity_values"]),
+        s = np.sqrt(np.concatenate(tmp_collapsed["corrected_intensity_values"])),
+    )
+    plt.xlim(583, 584.5)
+    plt.xlabel("m/z")
+    plt.ylabel("Ion Mobility")
+    plt.title(f"RT = {x}")
+    plt.colorbar()
+    plt.show()
+
+```

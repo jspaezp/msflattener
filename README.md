@@ -15,6 +15,12 @@ timsTOF and mzML data to parquet. The output format is not meant to
 contain all of the data in the original file, but to provide an
 intermediate representation that is fast to read by other tools.
 
+This approach is burrowed from the genomics world, where it is common
+to have intermediate representatinos of your data that do not have all
+information from the progenitor data (trimmed fastq files for example);
+but instead focus on just being usable for the next tool in your analysis
+pipeline.
+
 ## Rationale
 
 timsTOF data is internally organized in a peak-wise fashion with
@@ -37,6 +43,13 @@ in x-y ims range, in this retention time"); and whilst this is useful,
 it can make reading the data slower if you want to access it in a more
 sequential fashion (making XICs of A LOT of species at once).
 
+On top of the formerly mentioned benefits, this project makes use
+of apache arrow and the parquet data format pretty extensively. These
+specifications and formats are widely accepted in a broad range
+of applications, therefore have been very heavily optimized and give
+us many benefits out of the box (readability in any programming language,
+compression, strict schema within columns, speed of read/write).
+
 ## Assumptions
 
 The file format is meant to sacrifice some of the flexibility of the
@@ -50,6 +63,7 @@ It also assumes there will only be ms1 and ms2 scans.
 ## TODO
 - Add sliding window neighborhood in RT.
     - This means that neighbors are counted but not integrated from neighboring scans.
+- Add parallel compute.
 
 ## Additional Utility
 

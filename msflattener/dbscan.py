@@ -1,19 +1,23 @@
 import numpy as np
 from scipy.spatial import KDTree
 
+
 def _find_neighbors_sorted(array, max_distance):
     assert np.all(np.diff(array) >= 0), "Array not sorted"
-    neighbors = {i:{'neighbors': set(), 'count': 0} for i in range(len(array))}
+    neighbors = {i: {"neighbors": set(), "count": 0} for i in range(len(array))}
     ii = 0
     for ix, x in enumerate(array):
-        ii = np.searchsorted(array, x - max_distance, side='left', sorter=None)
-        ij = np.searchsorted(array, x + max_distance, side='right', sorter=None)
-        neighbors[ix]['neighbors'] = set(range(ii, ij))
-        neighbors[ix]['count'] = ij - ii
+        ii = np.searchsorted(array, x - max_distance, side="left", sorter=None)
+        ij = np.searchsorted(array, x + max_distance, side="right", sorter=None)
+        neighbors[ix]["neighbors"] = set(range(ii, ij))
+        neighbors[ix]["count"] = ij - ii
 
     return neighbors
 
-def _simplify_neighbors(neighbors: dict[int: set[int]], order: list[int], expansion_iters: int):
+
+def _simplify_neighbors(
+    neighbors: dict[int : set[int]], order: list[int], expansion_iters: int
+):
     used = set()
     out_neighbors = {}
     for o in order:
@@ -37,48 +41,117 @@ def _simplify_neighbors(neighbors: dict[int: set[int]], order: list[int], expans
 
     return out_neighbors
 
-def dbscan_1d(array, max_distance, min_neighbors, order, expansion_iters=10) -> dict[int:set[int]]:
+
+def dbscan_1d(
+    array, max_distance, min_neighbors, order, expansion_iters=10
+) -> dict[int : set[int]]:
     assert np.all(np.diff(array) >= 0), "Array not sorted"
     # neighbors = _find_neighbors_sorted(array=array, max_distance=max_distance)
     # filtered_neighbors = {k:v["neighbors"] for k,v in neighbors.items() if v['count'] >= min_neighbors}
-    tree = KDTree(np.expand_dims(array/max_distance, axis=-1))
+    tree = KDTree(
+        np.expand_dims(array / max_distance, axis=-1), leafsize=2 * min_neighbors
+    )
     neighbors = tree.query_pairs(1)
     out = {}
     for k, v in neighbors:
-        out.setdefault(k, set()).add(v)
-        out.setdefault(v, set()).add(k)
+        out.setdefault(k, {k}).add(v)
+        out.setdefault(v, {v}).add(k)
 
-    filtered_neighbors = {k:v for k, v in out.items() if len(v) >= min_neighbors}
+    if min_neighbors == 1:
+        for i in range(len(array)):
+            out.setdefault(i, {i})
+        filtered_neighbors = out
+    else:
+        filtered_neighbors = {k: v for k, v in out.items() if len(v) >= min_neighbors}
 
-    return _simplify_neighbors(filtered_neighbors, order=order, expansion_iters=expansion_iters)
+    return _simplify_neighbors(
+        filtered_neighbors, order=order, expansion_iters=expansion_iters
+    )
+
 
 # @profile
-def dbscan_nd(values_list: list[np.array], value_max_dists: list[float], min_neighbors: int, order: list[int], expansion_iters: int=50):
-    tree = KDTree(np.stack([x/y for  x,y in zip(values_list, value_max_dists)]).T)
+def dbscan_nd(
+    values_list: list[np.array],
+    value_max_dists: list[float],
+    min_neighbors: int,
+    order: list[int],
+    count_only_values_list: list[np.array] | None = None,
+    expansion_iters: int = 50,
+):
+    tree = KDTree(
+        np.stack([x / y for x, y in zip(values_list, value_max_dists)]).T,
+        leafsize=2 * min_neighbors,
+    )
     comb_neighs2 = tree.query_pairs(1)
     out = {}
     for k, v in comb_neighs2:
-        out.setdefault(k, set()).add(v)
-        out.setdefault(v, set()).add(k)
-    
-    combined_neighbors = {k:v for k, v in out.items() if len(v) >= min_neighbors}
+        out.setdefault(k, {k}).add(v)
+        out.setdefault(v, {v}).add(k)
 
-    return _simplify_neighbors(combined_neighbors, order=order, expansion_iters=expansion_iters)
+    if min_neighbors == 1:
+        for i in range(len(order)):
+            out.setdefault(i, {i})
+        combined_neighbors = out
+    else:
+        if count_only_values_list is not None:
+            combined_neighbors = {k: {'count':len(v), 'v':v} for k, v in out.items()}
+            other_tree = KDTree(
+                np.stack([x / y for x, y in zip(count_only_values_list, value_max_dists)]).T,
+                leafsize=10 * min_neighbors,
+            )
+            comb_neighs2 = tree.query_ball_tree(other_tree, 1)
+            for k, v in enumerate(comb_neighs2):
+                combined_neighbors.setdefault(k, {'count':1, 'v':{k}})['count'] += len(v)
 
-def dbscan_collapse(values: np.array, intensities: np.array, min_neighbors: int, value_max_dist: float):
+            combined_neighbors = {k: v['v'] for k, v in combined_neighbors.items() if v['count'] >= min_neighbors}
+        else:
+            combined_neighbors = {k: v for k, v in out.items() if len(v) >= min_neighbors}
+        
+
+    return _simplify_neighbors(
+        combined_neighbors, order=order, expansion_iters=expansion_iters
+    )
+
+
+def dbscan_collapse(
+    values: np.array,
+    intensities: np.array,
+    min_neighbors: int,
+    value_max_dist: float,
+    expansion_iters: int = 10,
+):
     sorting = np.argsort(values)
 
     arr = values[sorting]
     intensities = intensities[sorting]
 
     order = np.argsort(intensities)
-    neighbors = dbscan_1d(arr, value_max_dist, min_neighbors=min_neighbors, order=order)
+    neighbors = dbscan_1d(
+        arr,
+        value_max_dist,
+        min_neighbors=min_neighbors,
+        order=order,
+        expansion_iters=expansion_iters,
+    )
     fin_intensities = np.array([intensities[list(x)].sum() for x in neighbors.values()])
-    fin_values = arr[list(neighbors.keys())]
+    fin_values = np.array(
+        [
+            (intensities[list(x)] * arr[list(x)]).sum() / y
+            for x, y in zip(neighbors.values(), fin_intensities)
+        ]
+    )
     return fin_values, fin_intensities
 
+
 # @profile
-def dbscan_collapse_multi(values_list: list[np.array], value_max_dists: list[float], intensities: np.array, min_neighbors: int, expansion_iters: int=10):
+def dbscan_collapse_multi(
+    values_list: list[np.array],
+    value_max_dists: list[float],
+    intensities: np.array,
+    min_neighbors: int,
+    expansion_iters: int = 10,
+    count_only_values_list: None | list[np.array] = None,
+):
     assert len(values_list) == len(value_max_dists)
     assert all(len(values_list[0]) == len(x) for x in values_list)
 
@@ -88,12 +161,20 @@ def dbscan_collapse_multi(values_list: list[np.array], value_max_dists: list[flo
         value_max_dists=value_max_dists,
         min_neighbors=min_neighbors,
         order=order,
-        expansion_iters=expansion_iters)
+        expansion_iters=expansion_iters,
+        count_only_values_list=count_only_values_list,
+    )
 
-    fin_intensities = np.array([intensities[list(x)].sum() for x in combined_neighbors.values()])
+    fin_intensities = np.array(
+        [intensities[list(x)].sum() for x in combined_neighbors.values()]
+    )
     fin_values_list = []
     for arr in values_list:
-        tmp = np.array([(intensities[list(x)] * arr[list(x)]).sum() / y for x, y in zip(combined_neighbors.values(), fin_intensities)])
+        tmp = np.array(
+            [
+                (intensities[list(x)] * arr[list(x)]).sum() / y
+                for x, y in zip(combined_neighbors.values(), fin_intensities)
+            ]
+        )
         fin_values_list.append(tmp)
     return fin_values_list, fin_intensities
-

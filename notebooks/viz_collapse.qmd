@@ -10,17 +10,32 @@ import matplotlib.pyplot as plt
 import polars as pl
 import numpy as np
 
-out = get_timstof_data("data/20221016_PRO1_LSVD_00_30-0051_100ng_Regular_P1-C6_1_11234.hdf", progbar=False, safe=False)
+# Data from the alphatims paper from the mann lab
+out = get_timstof_data("/Users/sebastianpaez/git/msflattener/data/20210510_TIMS03_EVO03_PaSk_MA_HeLa_50ng_5_6min_DDA_S1-B1_1_25185.d", progbar=False, safe=False)
 print(out)
 
+```
+
+```{python}
 centroided_out = centroid_ims(out, min_neighbors=2, mz_distance=0.02, ims_distance=0.02, progbar=False)
 print(centroided_out)
 ```
 
+
 ```{python}
-promise = pl.col("rt_values").is_between(195, 205) & pl.col("quad_low_mz_values").is_between(576, 577)
-collapsed = centroided_out.filter(promise)
+MZ_LIMS=(898, 902)
+IMS_LIMS = (0.80, 1.20)
+RT_LIMS = (200, 210)
+QUAD_LOW_VAL=-1
+
+promise = (
+    pl.col("rt_values")
+    .is_between(*RT_LIMS) & 
+    pl.col("quad_low_mz_values")
+    .is_between(QUAD_LOW_VAL-0.01, QUAD_LOW_VAL+0.011)
+)
 orig = out.filter(promise)
+collapsed = centroided_out.filter(promise)
 
 print(orig)
 print(collapsed)
@@ -28,7 +43,7 @@ print(collapsed)
 
 
 ```{python}
-for x in collapsed["rt_values"]:
+for x in collapsed["rt_values"].sort():
     tmp_orig = orig.filter(pl.col("rt_values").is_between(x - 0.001, x + 0.001))
     tmp_collapsed = collapsed.filter(pl.col("rt_values").is_between(x - 0.001, x + 0.001))
 
@@ -45,7 +60,9 @@ for x in collapsed["rt_values"]:
         c = np.concatenate(tmp_collapsed["corrected_intensity_values"]),
         s = np.sqrt(np.concatenate(tmp_collapsed["corrected_intensity_values"])),
     )
-    plt.xlim(583, 584.5)
+    plt.xlim(*MZ_LIMS)
+    plt.ylim(*IMS_LIMS)
+
     plt.xlabel("m/z")
     plt.ylabel("Ion Mobility")
     plt.title(f"RT = {x}")

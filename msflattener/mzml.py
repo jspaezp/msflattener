@@ -3,19 +3,19 @@
 import base64
 import zlib
 
+from loguru import logger
 import numpy as np
-from tqdm.auto import tqdm
-from lxml import etree
 import polars as pl
+from lxml import etree
 from psims.mzml.writer import MzMLWriter
-
+from tqdm.auto import tqdm
 
 ACC_TO_TYPE = {
-    'MS:1000519': np.float32,
-    'MS:1000520': np.float16,
-    'MS:1000521': np.float32,
-    'MS:1000522': np.int32,
-    'MS:1000523': np.float64,
+    "MS:1000519": np.float32,
+    "MS:1000520": np.float16,
+    "MS:1000521": np.float32,
+    "MS:1000522": np.int32,
+    "MS:1000523": np.float64,
 }
 
 
@@ -41,10 +41,12 @@ def read(mzml_file, progbar=True):
 
     return spectra
 
+
 def _desc_acc_val(elem, accesion):
     elems = elem.xpath(f"descendant::*[@accession='{accesion}']")
     out = elems[0].get("value")
     return out
+
 
 def _parse_spectrum(elem):
     """Parse a mass spectrum.
@@ -88,9 +90,9 @@ def _parse_spectrum(elem):
     # Handle isolation windows
     try:
         iso_window = next(elem.iter("{*}isolationWindow"))
-        window_center = float(_desc_acc_val(iso_window, 'MS:1000827'))
-        low_offset = float(_desc_acc_val(iso_window, 'MS:1000828'))
-        high_offset = float(_desc_acc_val(iso_window, 'MS:1000829'))
+        window_center = float(_desc_acc_val(iso_window, "MS:1000827"))
+        low_offset = float(_desc_acc_val(iso_window, "MS:1000828"))
+        high_offset = float(_desc_acc_val(iso_window, "MS:1000829"))
 
         low_iso, high_iso = window_center - low_offset, window_center + high_offset
     except StopIteration:
@@ -127,7 +129,9 @@ def _parse_spectrum(elem):
                     array = np.frombuffer(bytearray(decoded), dtype=np_type)
                 except ValueError as e:
                     if "buffer size must be a multiple of element size" in str(e):
-                        err = ValueError(f"Unable to decompress array to type {np_type}")
+                        err = ValueError(
+                            f"Unable to decompress array to type {np_type}"
+                        )
                         raise err
                     else:
                         raise
@@ -140,15 +144,26 @@ def _parse_spectrum(elem):
 
     return spec_id, *spec
 
-def get_mzml_data(path, min_peaks, progbar=True):
-    out = {'mz_values': [], 'corrected_intensity_values': [], 'rt_values': [], "quad_low_mz_values": [], 'quad_high_mz_values': [] }
 
-    for _, elem in tqdm(etree.iterparse(str(path), tag="{*}spectrum"), desc="Spectra", disable=not progbar):
+def get_mzml_data(path, min_peaks, progbar=True) -> pl.DataFrame:
+    out = {
+        "mz_values": [],
+        "corrected_intensity_values": [],
+        "rt_values": [],
+        "quad_low_mz_values": [],
+        "quad_high_mz_values": [],
+    }
+
+    for _, elem in tqdm(
+        etree.iterparse(str(path), tag="{*}spectrum"),
+        desc="Spectra",
+        disable=not progbar,
+    ):
         _spec_id, *arrays = _parse_spectrum(elem)
         if len(arrays[0]) > min_peaks:
             for k, v in zip(out, arrays):
                 out[k].append(v)
-    
+
     return pl.DataFrame(out)
 
 
@@ -158,7 +173,7 @@ def yield_scans(df: pl.DataFrame):
     for id, row in enumerate(df.sort("rt_values").iter_rows(named=True)):
         row["id"] = id
         # If the current row is a parent, and there are already children, yield
-        if row['quad_low_mz_values'] < 0:
+        if row["quad_low_mz_values"] < 0:
             if curr_parent is not None:
                 yield curr_parent, curr_children
                 curr_parent = row
@@ -178,7 +193,10 @@ def write_mzml(df, out_path):
 
     # Load the data to write
     scans = list(yield_scans(df))
-    with MzMLWriter(open(out_path, 'wb'), close=True) as out:
+    ms1_scans = 0
+    ms2_scans = 0
+    print([len(y) for x, y in scans])
+    with MzMLWriter(open(out_path, "wb"), close=True) as out:
         # Add default controlled vocabularies
         out.controlled_vocabularies()
         # Open the run and spectrum list sections
@@ -186,34 +204,55 @@ def write_mzml(df, out_path):
             spectrum_count = len(scans) + sum([len(products) for _, products in scans])
             with out.spectrum_list(count=spectrum_count):
                 for scan, products in scans:
+                    ms1_scans += 1
                     # Write Precursor scan
                     out.write_spectrum(
-                        scan["mz_values"], scan["corrected_intensity_values"],
-                        id=scan["id"], params=[
+                        scan["mz_values"],
+                        scan["corrected_intensity_values"],
+                        id=scan["id"],
+                        params=[
                             "MS1 Spectrum",
                             {"ms level": 1},
-                            {"total ion current": sum(scan['corrected_intensity_values'])}
-                        ])
+                            {
+                                "total ion current": sum(
+                                    scan["corrected_intensity_values"]
+                                )
+                            },
+                        ],
+                    )
                     # Write MSn scans
                     for prod in products:
-                        prec_mz = (prod["quad_high_mz_values"] + prod["quad_low_mz_values"])/2
+                        ms2_scans += 1
+                        prec_mz = (
+                            prod["quad_high_mz_values"] + prod["quad_low_mz_values"]
+                        ) / 2
                         offset = prec_mz - prod["quad_low_mz_values"]
 
                         out.write_spectrum(
-                            prod['mz_values'], prod['corrected_intensity_values'],
-                            id=prod["id"], params=[
+                            prod["mz_values"],
+                            prod["corrected_intensity_values"],
+                            scan_start_time=prod["rt_values"],
+                            id=prod["id"],
+                            params=[
                                 "MSn Spectrum",
                                 {"ms level": 2},
-                                {"total ion current": sum(prod['corrected_intensity_values'])}
+                                {
+                                    "total ion current": sum(
+                                        prod["corrected_intensity_values"]
+                                    )
+                                },
                             ],
                             # Include precursor information
                             precursor_information={
-                                # "mz": prod.precursor_mz,
+                                "mz": prec_mz,
                                 # "intensity": prod.precursor_intensity,
                                 # "charge": prod.precursor_charge,
                                 "scan_id": scan["id"],
-                                # "activation": ["beam-type collisional dissociation", {"collision energy": 25}],
-                                "isolation_window": [offset, prec_mz, offset]
-                            })
-
-
+                                "activation": [
+                                    "beam-type collisional dissociation",
+                                    {"collision energy": 25},
+                                ],
+                                "isolation_window": [offset, prec_mz, offset],
+                            },
+                        )
+        logger.info(f"Written {ms1_scans} MS1 scans and {ms2_scans} MS2 scans to {out_path}")

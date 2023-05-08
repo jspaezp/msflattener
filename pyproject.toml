@@ -55,6 +55,8 @@ build = [
 docs = [
     "nbconvert",
     "nbclient",
+    "nbformat",
+    "seaborn >= 0.12.2",
 ]
 
 

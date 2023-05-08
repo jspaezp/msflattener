@@ -38,8 +38,6 @@ def cli():
 )
 def bruker(file, output, out_format, min_peaks, progbar):
     dat = get_timstof_data(file, min_peaks=min_peaks, progbar=progbar)
-    # dat = merge_ims_simple(dat,min_neighbors=15, mz_distance=0.01, progbar=progbar)
-    # dat = merge_ims_simple(dat,min_neighbors=15, mz_distance=0.01, ims_distance=0.01, progbar=progbar)
     dat = centroid_ims(
         dat, min_neighbors=2, mz_distance=0.02, ims_distance=0.02, progbar=progbar
     )

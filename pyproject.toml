@@ -32,6 +32,8 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[tool.setuptools_scm]
+
 [project.readme]
 file = "README.md"
 content-type = "text/markdown"
@@ -46,17 +48,21 @@ test = [
     "pytest-datadir >= 1.4.1",
     "pytest-cov >= 4.0.0",
 ]
-profiling = [
-    "line_profiler",
-]
 build = [
     "build",
+    "setuptools_scm",
 ]
 docs = [
     "nbconvert",
     "nbclient",
     "nbformat",
     "seaborn >= 0.12.2",
+]
+dev = [
+    "black",
+    "isort",
+    "codecov",
+    "msflattener[test,build,docs]",
 ]
 
 
@@ -100,3 +106,6 @@ line-length = 88
 target-version = ['py39', 'py310']
 preview = true
 
+[tool.isort]
+profile = "black"
+src_paths = ["msflattener", "test"]

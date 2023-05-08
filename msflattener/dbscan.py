@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.typing import NDArray
 from scipy.spatial import KDTree
 
 
@@ -43,11 +44,17 @@ def _simplify_neighbors(
 
 
 def dbscan_1d(
-    array, max_distance, min_neighbors, order, expansion_iters=10
+    array: np.array,
+    max_distance: float,
+    min_neighbors: int,
+    order: NDArray[np.int64],
+    expansion_iters: int = 10,
 ) -> dict[int : set[int]]:
     assert np.all(np.diff(array) >= 0), "Array not sorted"
+    # The KDtree replaces the following code, but is slower
     # neighbors = _find_neighbors_sorted(array=array, max_distance=max_distance)
-    # filtered_neighbors = {k:v["neighbors"] for k,v in neighbors.items() if v['count'] >= min_neighbors}
+    # filtered_neighbors = {k:v["neighbors"]
+    #  for k,v in neighbors.items() if v['count'] >= min_neighbors}
     tree = KDTree(
         np.expand_dims(array / max_distance, axis=-1), leafsize=2 * min_neighbors
     )
@@ -160,7 +167,27 @@ def dbscan_collapse_multi(
     min_neighbors: int,
     expansion_iters: int = 10,
     count_only_values_list: None | list[np.array] = None,
-):
+) -> tuple[list[np.array], np.array]:
+    """Collapse a set of values based on a set of distances.
+
+    Parameters
+    ----------
+    values_list : list[np.array]
+        List of arrays to collapse
+    value_max_dists : list[float]
+        List of maximum distances for each array
+    intensities : np.array
+        Intensities for each value
+    min_neighbors : int
+        Minimum number of neighbors to collapse
+    expansion_iters : int, optional
+        Number of iterations to expand the neighbors, by default 10
+    count_only_values_list : None | list[np.array], optional
+        List of arrays to count neighbors, by default None
+        values in these arrays will vount as neighbors but will
+        not be used during the expansion process or count towards
+        the final intensity.
+    """
     assert len(values_list) == len(value_max_dists)
     assert all(len(values_list[0]) == len(x) for x in values_list)
 

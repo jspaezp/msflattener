@@ -1,13 +1,7 @@
 import rich_click as click
 
-from .bruker import (centroid_ims, get_timstof_data, merge_ims_simple,
-                     merge_ims_twostep)
+from .bruker import centroid_ims, get_timstof_data
 from .mzml import get_mzml_data, write_mzml
-
-# msflattener
-# msflattener --to_mzml
-# msflattener --no_collapse_ims/collapse_ims
-# msflattener --min_peaks 10
 
 
 @click.group()

@@ -5,7 +5,7 @@ from loguru import logger
 from tqdm.auto import tqdm
 
 from .dbscan import dbscan_collapse, dbscan_collapse_multi
-from .utils import _get_breaks, _get_breaks_multi
+from .utils import _get_breaks_multi
 
 
 def get_timstof_data(path, min_peaks=15, progbar=True, safe=False):

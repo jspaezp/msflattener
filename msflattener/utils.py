@@ -1,12 +1,12 @@
 import numpy as np
 
 
-def _get_breaks(array: np.ndarray, min_diff=0):
+def _get_breaks(array: np.ndarray, min_diff: float = 0) -> np.ndarray:
     return np.where(np.abs(np.diff(array)) > min_diff)[0] + 1
 
 
-def _get_breaks_multi(*args):
-    if len(set(len(x) for x in args)) != 1:
+def _get_breaks_multi(*args: np.ndarray) -> np.ndarray:
+    if len({len(x) for x in args}) != 1:
         lens = [len(x) for x in args]
         raise ValueError(
             "All arrays need to be the same length, got lengths: " + str(lens)

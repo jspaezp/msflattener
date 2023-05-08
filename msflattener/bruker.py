@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import polars as pl
 from alphatims import bruker
@@ -8,10 +10,33 @@ from .dbscan import dbscan_collapse, dbscan_collapse_multi
 from .utils import _get_breaks_multi
 
 
-def get_timstof_data(path, min_peaks=15, progbar=True, safe=False):
-    FIELDS = [
-        "mz_values",
-        "corrected_intensity_values",
+def get_timstof_data(
+    path: os.PathLike, min_peaks=15, progbar=True, safe=False
+) -> pl.DataFrame:
+    """Reads timsTOF data from a file and returns a DataFrame with the data.
+
+    Parameters
+    ----------
+    path : os.PathLike
+        The path to the timsTOF file (.d directory or hdf converted file).
+    min_peaks : int, optional
+        The minimum number of peaks to keep a spectrum, by default 15
+    progbar : bool, optional
+        Whether to show a progress bar, by default True
+    safe : bool, optional
+        Whether to use the safe method of reading the data, by default False
+        Will be marginally faster if you disable it.
+    """
+    SCHEMA = {
+        "mz_values": pl.List(pl.Float64),
+        "corrected_intensity_values": pl.List(pl.UInt32),
+        "rt_values": pl.Float64,
+        "mobility_values": pl.Float64,
+        "quad_low_mz_values": pl.Float64,
+        "quad_high_mz_values": pl.Float64,
+    }
+
+    NON_NESTED = [
         "rt_values",
         "mobility_values",
         "quad_low_mz_values",
@@ -20,7 +45,7 @@ def get_timstof_data(path, min_peaks=15, progbar=True, safe=False):
     timstof_file = bruker.TimsTOF(path)
 
     final_out = {}
-    for x in FIELDS:
+    for x in SCHEMA:
         final_out[x] = []
 
     my_iter = tqdm(
@@ -66,7 +91,11 @@ def get_timstof_data(path, min_peaks=15, progbar=True, safe=False):
         for k, v in out.items():
             final_out[k].append(v)
 
-    return pl.DataFrame(final_out)
+    del timstof_file
+    for k in SCHEMA:
+        final_out[k] = pl.Series(name=k, values=final_out[k], dtype=SCHEMA[k])
+
+    return pl.DataFrame(final_out, schema=SCHEMA)
 
 
 def merge_ims_simple(df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, progbar=True):

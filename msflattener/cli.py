@@ -33,10 +33,10 @@ def cli():
 def bruker(file, output, out_format, min_peaks, progbar):
     dat = get_timstof_data(file, min_peaks=min_peaks, progbar=progbar)
     dat = centroid_ims(
-        dat, min_neighbors=2, mz_distance=0.02, ims_distance=0.02, progbar=progbar
+        dat, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, progbar=progbar
     )
     if out_format == "parquet":
-        dat.to_parquet(output)
+        dat.write_parquet(output)
     elif out_format == "mzml":
         write_mzml(dat, output)
     else:
@@ -48,7 +48,7 @@ def bruker(file, output, out_format, min_peaks, progbar):
     "--file",
     prompt="File Name",
     type=click.Path(exists=True),
-    help="The person to greet.",
+    help="The file to read data from!",
 )
 @click.option("--output", type=click.Path(exists=False), help="Name of the output file")
 @click.option("--min_peaks", default=10, help="Number of greetings.")

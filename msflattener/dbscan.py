@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
@@ -50,6 +52,12 @@ def dbscan_1d(
     order: NDArray[np.int64],
     expansion_iters: int = 10,
 ) -> dict[int : set[int]]:
+    """Find neighbors in a 1D array."""
+    # TODO optimize this, there has to be a more efficient way to
+    # do this in 1d ... Right now it is not within the scope of
+    # the project to do so.
+    # maybe something like `np.searchsorted(array, array + max_distance)`.
+
     assert np.all(np.diff(array) >= 0), "Array not sorted"
     # The KDtree replaces the following code, but is slower
     # neighbors = _find_neighbors_sorted(array=array, max_distance=max_distance)
@@ -84,7 +92,8 @@ def dbscan_nd(
     order: list[int],
     count_only_values_list: list[np.array] | None = None,
     expansion_iters: int = 50,
-):
+) -> dict[int : set[int]]:
+    """Find neighbors in n-dimensional space."""
     tree = KDTree(
         np.stack([x / y for x, y in zip(values_list, value_max_dists)]).T,
         leafsize=2 * min_neighbors,
@@ -135,7 +144,8 @@ def dbscan_collapse(
     min_neighbors: int,
     value_max_dist: float,
     expansion_iters: int = 10,
-):
+) -> tuple[np.array, np.array]:
+    """Collapses intensities by clustering them based on values."""
     sorting = np.argsort(values)
 
     arr = values[sorting]

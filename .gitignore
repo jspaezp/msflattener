@@ -11,3 +11,4 @@ data/mokapot*
 data/*.json
 
 dist/
+lib/

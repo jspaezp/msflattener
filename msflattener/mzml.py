@@ -276,7 +276,7 @@ def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
     This function has ben greatly taken from the readme of psims.
     """
     # Load the data to write
-    scans = list(yield_scans(df))
+    scans = yield_scans(df)
     ms1_scans = 0
     ms2_scans = 0
     with MzMLWriter(open(out_path, "wb"), close=True) as out:
@@ -284,7 +284,7 @@ def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
         out.controlled_vocabularies()
         # Open the run and spectrum list sections
         with out.run(id="my_analysis"):
-            spectrum_count = len(scans) + sum([len(products) for _, products in scans])
+            spectrum_count = len(df)
             with out.spectrum_list(count=spectrum_count):
                 for scan, products in scans:
                     ms1_scans += 1

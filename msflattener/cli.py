@@ -1,6 +1,7 @@
 import rich_click as click
 
-from .bruker import get_timstof_data, centroid_ims, merge_ims_simple, merge_ims_twostep
+from .bruker import (centroid_ims, get_timstof_data, merge_ims_simple,
+                     merge_ims_twostep)
 from .mzml import get_mzml_data, write_mzml
 
 # msflattener

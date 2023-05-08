@@ -5,7 +5,7 @@ from loguru import logger
 from tqdm.auto import tqdm
 
 from .dbscan import dbscan_collapse, dbscan_collapse_multi
-from .utils import _get_breaks_multi, _get_breaks
+from .utils import _get_breaks, _get_breaks_multi
 
 
 def get_timstof_data(path, min_peaks=15, progbar=True, safe=False):
@@ -189,9 +189,13 @@ def centroid_ims(
     return pl.DataFrame(out_vals)
 
 
-
 def centroid_ims_slidingwindow(
-    df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, rt_distance=2, progbar=True
+    df: pl.DataFrame,
+    min_neighbors=3,
+    mz_distance=0.01,
+    ims_distance=0.01,
+    rt_distance=2,
+    progbar=True,
 ):
     out_vals = {
         "mz_values": [],
@@ -223,7 +227,9 @@ def centroid_ims_slidingwindow(
             for z in before + after:
                 c_mzs = np.concatenate(z["mz_values"])
                 n_mzs.append(c_mzs)
-                c_imss = [[x] * len(y) for x, y in zip(z["mobility_values"], z["mz_values"])]
+                c_imss = [
+                    [x] * len(y) for x, y in zip(z["mobility_values"], z["mz_values"])
+                ]
                 n_imss.append(np.concatenate(c_imss))
 
             n_imss = np.concatenate(n_imss)
@@ -258,12 +264,10 @@ def centroid_ims_slidingwindow(
             skipped += 1
 
     logger.info(
-        f"Finished Sliding, skipped {skipped}/{total} spectra for not having"
-        " any peaks"
+        f"Finished Sliding, skipped {skipped}/{total} spectra for not having any peaks"
     )
 
     return pl.DataFrame(out_vals)
-
 
 
 def merge_ims_twostep(
@@ -339,9 +343,10 @@ def merge_ims_twostep(
     )
     return pl.DataFrame(out_vals)
 
+
 def __remove_low(lst, index_lst, current_val, lowest_val, max_diff):
     """Internal function mean to be used within _iter_with_window.
-    
+
     It removes elements from a temporary list until the difference between
     the current value and the lowest value is less than max_diff.
     """
@@ -352,9 +357,10 @@ def __remove_low(lst, index_lst, current_val, lowest_val, max_diff):
 
     return lst, index_lst, lowest_val
 
+
 def _iter_with_window(df, rt_window_max=1):
     """Iterates over the dataframe with a window of rt_window_max.
-    
+
     It progressively generates windows of data that are split in the
     rt dimension and share quad isolation.
 
@@ -362,10 +368,10 @@ def _iter_with_window(df, rt_window_max=1):
     the rt_window_max is 2:
     The expected yielded groups will be:
     [1, 2] 3 [4, 5]
-       [2, 3] 4 [5, 6] 
-          [3, 4] 5 [6, 7] 
-             [4, 5] 6 [7, 8] 
-                [5, 6] 7 [8, 9] 
+       [2, 3] 4 [5, 6]
+          [3, 4] 5 [6, 7]
+             [4, 5] 6 [7, 8]
+                [5, 6] 7 [8, 9]
                    [6, 7] 8 [9, 10]
                       [7, 8] 9 [10]
                          [8, 9] 10
@@ -396,7 +402,7 @@ def _iter_with_window(df, rt_window_max=1):
             subchunk = chunk[start:end]
             if current_rt is None:
                 current_rt = subchunk["rt_values"][0]
-            
+
             neighborhood_after.append(subchunk)
             latest_rt = subchunk["rt_values"][0]
             rts_after.append(latest_rt)
@@ -414,7 +420,12 @@ def _iter_with_window(df, rt_window_max=1):
 
             while rts_after and (latest_rt - current_rt > rt_window_max):
                 rts_before, neighborhood_before, earliest_rt = __remove_low(
-                    rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max)
+                    rts_before,
+                    neighborhood_before,
+                    current_rt,
+                    earliest_rt,
+                    rt_window_max,
+                )
                 if current_elem is None:
                     current_rt = rts_after.pop(0)
                     current_elem = neighborhood_after.pop(0)
@@ -427,8 +438,8 @@ def _iter_with_window(df, rt_window_max=1):
                 current_elem = neighborhood_after.pop(0)
 
             rts_before, neighborhood_before, earliest_rt = __remove_low(
-                rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max)
-            
+                rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max
+            )
 
         # Since there can be some left over, yield them
         # This section of logic is really not pretty but works.
@@ -449,7 +460,8 @@ def _iter_with_window(df, rt_window_max=1):
                     last = True
 
             rts_before, neighborhood_before, earliest_rt = __remove_low(
-                rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max)
+                rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max
+            )
 
 
 def test_iter_with_window():
@@ -463,7 +475,7 @@ def test_iter_with_window():
 
     for i, (x, w, z) in enumerate(_iter_with_window(fakedata, rt_window_max=2)):
         assert len(w) == min(i, 2)
-        assert len(z) == min(8-i, 2), f"min(8-i, 2); i {i}, len(z) {len(z)}"
+        assert len(z) == min(8 - i, 2), f"min(8-i, 2); i {i}, len(z) {len(z)}"
 
     assert len(list(_iter_with_window(fakedata, rt_window_max=2))) == 9
     assert len(z) == 0

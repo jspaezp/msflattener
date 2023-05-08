@@ -94,19 +94,28 @@ def dbscan_nd(
         combined_neighbors = out
     else:
         if count_only_values_list is not None:
-            combined_neighbors = {k: {'count':len(v), 'v':v} for k, v in out.items()}
+            combined_neighbors = {k: {"count": len(v), "v": v} for k, v in out.items()}
             other_tree = KDTree(
-                np.stack([x / y for x, y in zip(count_only_values_list, value_max_dists)]).T,
+                np.stack(
+                    [x / y for x, y in zip(count_only_values_list, value_max_dists)]
+                ).T,
                 leafsize=10 * min_neighbors,
             )
             comb_neighs2 = tree.query_ball_tree(other_tree, 1)
             for k, v in enumerate(comb_neighs2):
-                combined_neighbors.setdefault(k, {'count':1, 'v':{k}})['count'] += len(v)
+                combined_neighbors.setdefault(k, {"count": 1, "v": {k}})[
+                    "count"
+                ] += len(v)
 
-            combined_neighbors = {k: v['v'] for k, v in combined_neighbors.items() if v['count'] >= min_neighbors}
+            combined_neighbors = {
+                k: v["v"]
+                for k, v in combined_neighbors.items()
+                if v["count"] >= min_neighbors
+            }
         else:
-            combined_neighbors = {k: v for k, v in out.items() if len(v) >= min_neighbors}
-        
+            combined_neighbors = {
+                k: v for k, v in out.items() if len(v) >= min_neighbors
+            }
 
     return _simplify_neighbors(
         combined_neighbors, order=order, expansion_iters=expansion_iters

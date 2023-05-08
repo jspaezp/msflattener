@@ -3,9 +3,9 @@
 import base64
 import zlib
 
-from loguru import logger
 import numpy as np
 import polars as pl
+from loguru import logger
 from lxml import etree
 from psims.mzml.writer import MzMLWriter
 from tqdm.auto import tqdm
@@ -255,4 +255,6 @@ def write_mzml(df, out_path):
                                 "isolation_window": [offset, prec_mz, offset],
                             },
                         )
-        logger.info(f"Written {ms1_scans} MS1 scans and {ms2_scans} MS2 scans to {out_path}")
+        logger.info(
+            f"Written {ms1_scans} MS1 scans and {ms2_scans} MS2 scans to {out_path}"
+        )

@@ -5,16 +5,29 @@ jupyter: python3
 ---
 
 ```{python}
-from msflattener.bruker import centroid_ims, get_timstof_data, merge_ims_simple, centroid_ims_slidingwindow, merge_ims_twostep
+from msflattener.bruker import centroid_ims, get_timstof_data, merge_ims_simple
 import matplotlib.pyplot as plt
 import polars as pl
 import numpy as np
 import seaborn as sns
 
 # Data from the alphatims paper from the mann lab
-out = get_timstof_data("/Users/sebastianpaez/git/msflattener/data/20210510_TIMS03_EVO03_PaSk_MA_HeLa_50ng_5_6min_DDA_S1-B1_1_25185.d", progbar=False, safe=False)
+out = get_timstof_data("data/20210510_TIMS03_EVO03_PaSk_MA_HeLa_50ng_5_6min_DDA_S1-B1_1_25185.d", progbar=False, safe=False)
 # Subsetting to only 10 secs
 out = out.filter(pl.col("rt_values").is_between(200, 210))
+
+# (out
+#     .filter(pl.col("quad_low_mz_values") < 0)
+#     .explode(['mz_values', 'corrected_intensity_values'])
+#     .filter(pl.col('mz_values')
+#     .is_between(898, 902))
+#     .groupby(
+#         ['rt_values','mobility_values',
+#          'quad_low_mz_values','quad_high_mz_values'])
+#     .agg(pl.col(['mz_values', 'corrected_intensity_values']))
+#     .write_parquet("samplefile.pq")
+# )
+
 print(out)
 ```
 
@@ -27,7 +40,7 @@ QUAD_LOW_VAL=-1
 def filter_and_melt(df):
     promise = (
         pl.col("rt_values")
-        .is_between(*RT_LIMS) & 
+        .is_between(*RT_LIMS) &
         pl.col("quad_low_mz_values")
         .is_between(QUAD_LOW_VAL-0.01, QUAD_LOW_VAL+0.011)
     )

@@ -1,11 +1,18 @@
-"""This module was written by Will Fondrie"""
+"""Implements reading and writting mzml file and its interface with polars.
+
+This module was written by Will Fondrie.
+"""
+
+from __future__ import annotations
 
 import base64
+import os
 import zlib
+from collections.abc import Generator
 
-from loguru import logger
 import numpy as np
 import polars as pl
+from loguru import logger
 from lxml import etree
 from psims.mzml.writer import MzMLWriter
 from tqdm.auto import tqdm
@@ -19,8 +26,10 @@ ACC_TO_TYPE = {
 }
 
 
-def read(mzml_file, progbar=True):
-    """Parse the mzML file
+def read(
+    mzml_file: os.PathLike, progbar: bool = True
+) -> dict[str, tuple[np.ndarray, np.ndarray, float, float, float]]:
+    """Parse the mzML file.
 
     Parameters
     ----------
@@ -31,24 +40,34 @@ def read(mzml_file, progbar=True):
 
     Returns
     -------
-    Dict of Tuple of (np.ndarray, np.ndarray)
+    Dict of Tuple of (np.ndarray, np.ndarray, float, float, float)
         The mass spectra, indexed by the scan identifier.
+        Companion float values are the retention time (seconds),
+        lower isolation window, and upper isolation window.
+
+    Note:
+    This function was originally written by Will Fondrie
     """
     spectra = {}
-    for _, elem in tqdm(etree.iterparse(str(mzml_file), tag="{*}spectrum")):
+    for _, elem in tqdm(
+        etree.iterparse(str(mzml_file), tag="{*}spectrum"), disable=not progbar
+    ):
         spec_id, arrays = _parse_spectrum(elem)
         spectra[spec_id] = arrays
 
     return spectra
 
 
-def _desc_acc_val(elem, accesion):
+def _desc_acc_val(elem: etree.Element, accesion: str) -> str:
+    """Get the value of an element with a given accession."""
     elems = elem.xpath(f"descendant::*[@accession='{accesion}']")
     out = elems[0].get("value")
     return out
 
 
-def _parse_spectrum(elem):
+def _parse_spectrum(  # noqa: C901
+    elem: etree.Element,
+) -> tuple[str, np.ndarray, np.ndarray, float, float, float]:
     """Parse a mass spectrum.
 
     Parameters
@@ -72,6 +91,10 @@ def _parse_spectrum(elem):
         Higher limit set to the isolation window
         Will be set to -1 if no isolation is detected
 
+    Note:
+    This function was originally written by Will Fondrie and JSPP added
+    functionality to extract the isolation windows, retention times
+    and different compresison schemas.
     """
     spec_id = elem.get("id")
 
@@ -145,7 +168,31 @@ def _parse_spectrum(elem):
     return spec_id, *spec
 
 
-def get_mzml_data(path, min_peaks, progbar=True) -> pl.DataFrame:
+def get_mzml_data(
+    path: os.PathLike, min_peaks: int, progbar: bool = True
+) -> pl.DataFrame:
+    """Reads a mzML file and returns a DataFrame with the spectra.
+
+    Parameters
+    ----------
+    path : os.PathLike
+        The path to the mzML file.
+    min_peaks : int
+        The minimum number of peaks to keep a spectrum.
+    progbar : bool
+        Whether to show progress.
+
+    Returns
+    -------
+    pl.DataFrame
+        A DataFrame with the spectra.
+        It has the following columns:
+            mz_values: np.ndarray, nested
+            corrected_intensity_values: np.ndarray, nested
+            rt_values: np.ndarray
+            quad_low_mz_values: np.ndarray
+            quad_high_mz_values: np.ndarray
+    """
     out = {
         "mz_values": [],
         "corrected_intensity_values": [],
@@ -167,7 +214,33 @@ def get_mzml_data(path, min_peaks, progbar=True) -> pl.DataFrame:
     return pl.DataFrame(out)
 
 
-def yield_scans(df: pl.DataFrame):
+def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, None]:
+    """Yield scans from a DataFrame.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        The DataFrame to yield scans from.
+        It needs to contain the following columns:
+            mz_values: np.ndarray, nested
+            corrected_intensity_values: np.ndarray, nested
+            rt_values: np.ndarray
+            quad_low_mz_values: np.ndarray
+            quad_high_mz_values: np.ndarray
+
+    Yields
+    ------
+    tuple[dict, list[dict]]
+        A tuple with the parent scan and the children scans.
+        Each scan is a dict with the following keys:
+            mz_values: np.ndarray
+            corrected_intensity_values: np.ndarray
+            rt_values: float
+            quad_low_mz_values: float
+            quad_high_mz_values: float
+            id: int
+
+    """
     curr_parent = None
     curr_children = []
     for id, row in enumerate(df.sort("rt_values").iter_rows(named=True)):
@@ -188,20 +261,30 @@ def yield_scans(df: pl.DataFrame):
         yield curr_parent, curr_children
 
 
-def write_mzml(df, out_path):
-    """Greatly taken from the readme of psims"""
+def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
+    """Write a parquet df to mzml.
 
+    Parameters
+    ----------
+    df : pl.DataFrame
+        The dataframe to write. It needs to contain the following columns:
+        mz_values, corrected_intensity_values, rt_values, quad_low_mz_values,
+        quad_high_mz_values.
+    out_path : os.PathLike
+        The path to write the mzml file to.
+
+    This function has ben greatly taken from the readme of psims.
+    """
     # Load the data to write
-    scans = list(yield_scans(df))
+    scans = yield_scans(df)
     ms1_scans = 0
     ms2_scans = 0
-    print([len(y) for x, y in scans])
     with MzMLWriter(open(out_path, "wb"), close=True) as out:
         # Add default controlled vocabularies
         out.controlled_vocabularies()
         # Open the run and spectrum list sections
         with out.run(id="my_analysis"):
-            spectrum_count = len(scans) + sum([len(products) for _, products in scans])
+            spectrum_count = len(df)
             with out.spectrum_list(count=spectrum_count):
                 for scan, products in scans:
                     ms1_scans += 1
@@ -255,4 +338,6 @@ def write_mzml(df, out_path):
                                 "isolation_window": [offset, prec_mz, offset],
                             },
                         )
-        logger.info(f"Written {ms1_scans} MS1 scans and {ms2_scans} MS2 scans to {out_path}")
+        logger.info(
+            f"Written {ms1_scans} MS1 scans and {ms2_scans} MS2 scans to {out_path}"
+        )

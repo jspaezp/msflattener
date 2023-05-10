@@ -1,3 +1,6 @@
+import os
+from multiprocessing import Pool, cpu_count
+
 import numpy as np
 import polars as pl
 from alphatims import bruker
@@ -5,68 +8,220 @@ from loguru import logger
 from tqdm.auto import tqdm
 
 from .dbscan import dbscan_collapse, dbscan_collapse_multi
-from .utils import _get_breaks_multi, _get_breaks
+from .utils import _get_breaks_multi
+
+SCHEMA = {
+    "mz_values": pl.List(pl.Float64),
+    "corrected_intensity_values": pl.List(pl.UInt32),
+    "rt_values": pl.Float64,
+    "mobility_values": pl.Float64,
+    "quad_low_mz_values": pl.Float64,
+    "quad_high_mz_values": pl.Float64,
+}
+
+NON_NESTED = [
+    "rt_values",
+    "mobility_values",
+    "quad_low_mz_values",
+    "quad_high_mz_values",
+]
+
+YIELDING_FIELDS = [
+    "rt_values",
+    "quad_low_mz_values",
+    "quad_high_mz_values",
+]
 
 
-def get_timstof_data(path, min_peaks=15, progbar=True, safe=False):
-    FIELDS = [
-        "mz_values",
-        "corrected_intensity_values",
-        "rt_values",
-        "mobility_values",
-        "quad_low_mz_values",
-        "quad_high_mz_values",
+def _iter_timstof_data(
+    timstof_file: bruker.TimsTOF, min_peaks=15, progbar=True, safe=False
+):
+    boundaries = [
+        (start, end)
+        for start, end in zip(
+            timstof_file.push_indptr[:-1], timstof_file.push_indptr[1:]
+        )
+        if end - start >= min_peaks
     ]
-    timstof_file = bruker.TimsTOF(path)
-
-    final_out = {}
-    for x in FIELDS:
-        final_out[x] = []
-
-    my_iter = tqdm(
-        zip(timstof_file.push_indptr[:-1], timstof_file.push_indptr[1:]),
-        disable=not progbar,
-        desc="Tims Pushes",
-        total=len(timstof_file.push_indptr),
+    contexts = timstof_file.convert_from_indices(
+        raw_indices=[x[0] for x in boundaries],
+        return_rt_values=True,
+        return_quad_mz_values=True,
+        return_mobility_values=True,
+        raw_indices_sorted=True,
     )
-    for start, end in my_iter:
-        if end - start < min_peaks:
-            continue
-
-        context = timstof_file.convert_from_indices(
-            raw_indices=[start],
+    if safe:
+        context2 = timstof_file.convert_from_indices(
+            raw_indices=[x[1] - 1 for x in boundaries],
             return_rt_values=True,
             return_quad_mz_values=True,
             return_mobility_values=True,
             raw_indices_sorted=True,
         )
-        query_range = range(start, end)
-        if safe:
-            context2 = timstof_file.convert_from_indices(
-                raw_indices=[end],
-                return_rt_values=True,
-                return_quad_mz_values=True,
-                return_mobility_values=True,
-                raw_indices_sorted=True,
-            )
-            if not all(context[x] == context2[x] for x in context):
+        for k, v in context2.items():
+            if not np.all(v == contexts[k]):
                 raise ValueError(
-                    "Not all fields in the timstof context share values"
-                    f" {context} {context2}"
+                    f"Not all fields in the timstof context share valuesfor {k} "
                 )
 
-        for k, v in context.items():
-            final_out[k].append(v[0])
+    my_iter = tqdm(
+        boundaries,
+        disable=not progbar,
+        desc="Tims Pushes",
+        total=len(boundaries),
+        mininterval=0.2,
+        maxinterval=5,
+    )
+    chunk_out = {}
+    last_rt = None
+    last_quad_high = None
+    last_quad_low = None
+
+    for i, (start, end) in enumerate(my_iter):
+        context = {k: v[i] for k, v in contexts.items()}
+        query_range = range(start, end)
+
         out = timstof_file.convert_from_indices(
             raw_indices=query_range,
             return_corrected_intensity_values=True,
             return_mz_values=True,
             raw_indices_sorted=True,
         )
-        for k, v in out.items():
-            final_out[k].append(v)
+        for k, v in context.items():
+            out[k] = v
 
-    return pl.DataFrame(final_out)
+        if last_rt is not None:
+            any_change = (
+                last_rt != out["rt_values"]
+                or last_quad_high != out["quad_high_mz_values"]
+                or last_quad_low != out["quad_low_mz_values"]
+            )
+            if any_change:
+                yield chunk_out
+                chunk_out = {}
+
+        for k, v in out.items():
+            if k in YIELDING_FIELDS:
+                chunk_out[k] = v
+            else:
+                chunk_out.setdefault(k, []).append(v)
+
+        last_rt = out["rt_values"]
+        last_quad_high = out["quad_high_mz_values"]
+        last_quad_low = out["quad_low_mz_values"]
+
+    if chunk_out:
+        yield chunk_out
+
+
+def __centroid_chunk(chunk_dict):
+    mzs = np.concatenate(chunk_dict["mz_values"])
+    if len(mzs) < 1:
+        return
+    intensities = np.concatenate(chunk_dict["corrected_intensity_values"])
+    imss = chunk_dict["mobility_values"]
+    imss = np.concatenate(
+        [
+            np.full_like(y, x)
+            for x, y in zip(chunk_dict["mobility_values"], chunk_dict["mz_values"])
+        ]
+    )
+    prior_intensity = intensities.sum()
+    (mzs, imss), intensities = dbscan_collapse_multi(
+        [mzs, imss],
+        value_max_dists=[0.01, 0.01],
+        intensities=intensities,
+        min_neighbors=3,
+        expansion_iters=10,
+    )
+    new_intensities = intensities.sum()
+    assert new_intensities <= prior_intensity
+
+    if len(mzs) < 5:
+        return
+
+    chunk_dict["mz_values"] = mzs
+    chunk_dict["corrected_intensity_values"] = intensities
+    chunk_dict["mobility_values"] = imss
+    return chunk_dict
+
+
+def get_timstof_data(
+    path: os.PathLike, min_peaks=15, progbar=True, safe=False, centroid=False
+) -> pl.DataFrame:
+    """Reads timsTOF data from a file and returns a DataFrame with the data.
+
+    Parameters
+    ----------
+    path : os.PathLike
+        The path to the timsTOF file (.d directory or hdf converted file).
+    min_peaks : int, optional
+        The minimum number of peaks to keep a spectrum, by default 15
+    progbar : bool, optional
+        Whether to show a progress bar, by default True
+    safe : bool, optional
+        Whether to use the safe method of reading the data, by default False
+        Will be marginally faster if you disable it.
+    centroid : bool, optional
+        Whether to centroid the data, by default False
+    """
+    timstof_file = bruker.TimsTOF(path, mmap_detector_events=True)
+
+    final_out = {k: [] for k in SCHEMA}
+
+    if centroid:
+        with Pool(processes=cpu_count()) as pool:
+            for chunk_dict in pool.imap_unordered(
+                __centroid_chunk,
+                _iter_timstof_data(
+                    timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
+                ),
+            ):
+                if chunk_dict is None:
+                    continue
+                for k, v in chunk_dict.items():
+                    final_out[k].append(v)
+
+    else:
+        for chunk_dict in _iter_timstof_data(
+            timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
+        ):
+            for k, v in chunk_dict.items():
+                final_out[k].append(v)
+
+    del timstof_file
+
+    final_out = {
+        k: np.array(v) if not isinstance(v[0], np.ndarray) else v
+        for k, v in final_out.items()
+    }
+    if centroid:
+        SCHEMA["mobility_values"] = SCHEMA["mz_values"]
+    final_out = pl.DataFrame(final_out, schema=SCHEMA)
+
+    return final_out
+
+
+def _merge_ims_simple_chunk(chunk, min_neighbors=3, mz_distance=0.01):
+    mzs = np.concatenate(chunk["mz_values"])
+    intensities = np.concatenate(chunk["corrected_intensity_values"])
+    in_len = len(mzs)
+
+    mzs, intensities = dbscan_collapse(
+        mzs,
+        intensities=intensities,
+        min_neighbors=min_neighbors,
+        value_max_dist=mz_distance,
+    )
+    out_vals = {}
+    out_vals["mz_values"] = mzs
+    out_vals["corrected_intensity_values"] = intensities
+    out_vals["rt_values"] = chunk["rt_values"][0]
+    out_vals["quad_low_mz_values"] = chunk["quad_low_mz_values"][0]
+    out_vals["quad_high_mz_values"] = chunk["quad_high_mz_values"][0]
+    out_vals["mobility_low_values"] = chunk["mobility_values"].min()
+    out_vals["mobility_high_values"] = chunk["mobility_values"].max()
+    return pl.DataFrame(out_vals), in_len
 
 
 def merge_ims_simple(df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, progbar=True):
@@ -80,41 +235,18 @@ def merge_ims_simple(df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, progba
         disable=not progbar,
         desc="Merging in 1d",
     )
-    out_vals = {
-        "mz_values": [],
-        "corrected_intensity_values": [],
-        "quad_low_mz_values": [],
-        "quad_high_mz_values": [],
-        "rt_values": [],
-        "mobility_low_values": [],
-        "mobility_high_values": [],
-    }
+    out_vals = []
     skipped = 0
     total = len(breaks) - 1
     for start, end in my_iter:
         chunk = df[start:end]
-
-        mzs = np.concatenate(chunk["mz_values"])
-        intensities = np.concatenate(chunk["corrected_intensity_values"])
-        in_len = len(mzs)
-
-        mzs, intensities = dbscan_collapse(
-            mzs,
-            intensities=intensities,
-            min_neighbors=min_neighbors,
-            value_max_dist=mz_distance,
+        out_chunk, in_len = _merge_ims_simple_chunk(
+            chunk=chunk, min_neighbors=min_neighbors, mz_distance=mz_distance
         )
-
-        if len(mzs):
-            my_iter.set_postfix({"out_len": len(mzs), "in_len": in_len})
-            out_vals["mz_values"].append(mzs)
-            out_vals["corrected_intensity_values"].append(intensities)
-            out_vals["rt_values"].append(chunk["rt_values"][0])
-            out_vals["quad_low_mz_values"].append(chunk["quad_low_mz_values"][0])
-            out_vals["quad_high_mz_values"].append(chunk["quad_high_mz_values"][0])
-            out_vals["mobility_low_values"].append(chunk["mobility_values"].min())
-            out_vals["mobility_high_values"].append(chunk["mobility_values"].max())
+        if len(out_chunk):
+            my_iter.set_postfix({"out_len": len(out_chunk), "in_len": in_len})
         else:
+            out_vals.append(out_chunk)
             skipped += 1
 
     logger.info(
@@ -123,6 +255,36 @@ def merge_ims_simple(df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, progba
     )
 
     return pl.DataFrame(out_vals)
+
+
+def _centroid_ims_chunk(chunk, mz_distance, ims_distance, min_neighbors):
+    mzs = np.concatenate(chunk["mz_values"])
+    imss = np.concatenate(
+        [[x] * len(y) for x, y in zip(chunk["mobility_values"], chunk["mz_values"])]
+    )
+    intensities = np.concatenate(chunk["corrected_intensity_values"])
+    prior_intensity = intensities.sum()
+    in_len = len(mzs)
+
+    (mzs, imss), intensities = dbscan_collapse_multi(
+        [mzs, imss],
+        value_max_dists=[mz_distance, ims_distance],
+        intensities=intensities,
+        min_neighbors=min_neighbors,
+        expansion_iters=10,
+    )
+    new_intensities = intensities.sum()
+    assert new_intensities <= prior_intensity
+
+    out_vals = {}
+    out_vals["mz_values"] = mzs
+    out_vals["corrected_intensity_values"] = intensities
+    out_vals["mobility_values"] = imss
+    out_vals["rt_values"] = chunk["rt_values"][0]
+    out_vals["quad_low_mz_values"] = chunk["quad_low_mz_values"][0]
+    out_vals["quad_high_mz_values"] = chunk["quad_high_mz_values"][0]
+
+    return pl.DataFrame(out_vals), in_len
 
 
 def centroid_ims(
@@ -133,51 +295,27 @@ def centroid_ims(
         df["rt_values"].to_numpy(),
         df["quad_low_mz_values"].to_numpy(),
     )
+    total = len(breaks) - 1
     my_iter = tqdm(
         zip(breaks[:-1], breaks[1:]),
-        total=len(breaks) - 1,
+        total=total,
         disable=not progbar,
         desc="Merging in 2d",
     )
-    out_vals = {
-        "mz_values": [],
-        "corrected_intensity_values": [],
-        "mobility_values": [],
-        "quad_low_mz_values": [],
-        "quad_high_mz_values": [],
-        "rt_values": [],
-    }
+    out_vals = []
     skipped = 0
-    total = len(breaks) - 1
     for start, end in my_iter:
         chunk = df[start:end]
-
-        mzs = np.concatenate(chunk["mz_values"])
-        imss = np.concatenate(
-            [[x] * len(y) for x, y in zip(chunk["mobility_values"], chunk["mz_values"])]
-        )
-        intensities = np.concatenate(chunk["corrected_intensity_values"])
-        prior_intensity = intensities.sum()
-        in_len = len(mzs)
-
-        (mzs, imss), intensities = dbscan_collapse_multi(
-            [mzs, imss],
-            value_max_dists=[mz_distance, ims_distance],
-            intensities=intensities,
+        out_chunk, in_len = _centroid_ims_chunk(
+            chunk=chunk,
+            mz_distance=mz_distance,
+            ims_distance=ims_distance,
             min_neighbors=min_neighbors,
-            expansion_iters=10,
         )
-        new_intensities = intensities.sum()
-        assert new_intensities <= prior_intensity
 
-        if len(mzs):
-            my_iter.set_postfix({"out_len": len(mzs), "in_len": in_len})
-            out_vals["mz_values"].append(mzs)
-            out_vals["corrected_intensity_values"].append(intensities)
-            out_vals["mobility_values"].append(imss)
-            out_vals["rt_values"].append(chunk["rt_values"][0])
-            out_vals["quad_low_mz_values"].append(chunk["quad_low_mz_values"][0])
-            out_vals["quad_high_mz_values"].append(chunk["quad_high_mz_values"][0])
+        if len(out_chunk):
+            my_iter.set_postfix({"out_len": len(out_chunk), "in_len": in_len})
+            out_vals.append(out_chunk)
         else:
             skipped += 1
 
@@ -186,287 +324,4 @@ def centroid_ims(
         " any peaks"
     )
 
-    return pl.DataFrame(out_vals)
-
-
-
-def centroid_ims_slidingwindow(
-    df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, rt_distance=2, progbar=True
-):
-    out_vals = {
-        "mz_values": [],
-        "corrected_intensity_values": [],
-        "mobility_values": [],
-        "quad_low_mz_values": [],
-        "quad_high_mz_values": [],
-        "rt_values": [],
-    }
-    skipped = 0
-    total = 0
-    my_iter = tqdm(
-        _iter_with_window(df, rt_window_max=rt_distance),
-        disable=not progbar,
-        desc="Merging in 2d with sliding window",
-    )
-    for chunk, before, after in my_iter:
-        total += 1
-        mzs = np.concatenate(chunk["mz_values"])
-        imss = np.concatenate(
-            [[x] * len(y) for x, y in zip(chunk["mobility_values"], chunk["mz_values"])]
-        )
-        intensities = np.concatenate(chunk["corrected_intensity_values"])
-        if len(mzs) == 0:
-            logger.error("No peaks in chunk")
-        if len(before + after) > 0:
-            n_imss = []
-            n_mzs = []
-            for z in before + after:
-                c_mzs = np.concatenate(z["mz_values"])
-                n_mzs.append(c_mzs)
-                c_imss = [[x] * len(y) for x, y in zip(z["mobility_values"], z["mz_values"])]
-                n_imss.append(np.concatenate(c_imss))
-
-            n_imss = np.concatenate(n_imss)
-            n_mzs = np.concatenate(n_mzs)
-            count_only_values_list = [n_mzs, n_imss]
-        else:
-            count_only_values_list = None
-
-        prior_intensity = intensities.sum()
-        in_len = len(mzs)
-
-        (mzs, imss), intensities = dbscan_collapse_multi(
-            [mzs, imss],
-            value_max_dists=[mz_distance, ims_distance],
-            intensities=intensities,
-            min_neighbors=min_neighbors,
-            expansion_iters=10,
-            count_only_values_list=count_only_values_list,
-        )
-        new_intensities = intensities.sum()
-        assert new_intensities <= prior_intensity
-
-        if len(mzs):
-            my_iter.set_postfix({"out_len": len(mzs), "in_len": in_len})
-            out_vals["mz_values"].append(mzs)
-            out_vals["corrected_intensity_values"].append(intensities)
-            out_vals["mobility_values"].append(imss)
-            out_vals["rt_values"].append(chunk["rt_values"][0])
-            out_vals["quad_low_mz_values"].append(chunk["quad_low_mz_values"][0])
-            out_vals["quad_high_mz_values"].append(chunk["quad_high_mz_values"][0])
-        else:
-            skipped += 1
-
-    logger.info(
-        f"Finished Sliding, skipped {skipped}/{total} spectra for not having"
-        " any peaks"
-    )
-
-    return pl.DataFrame(out_vals)
-
-
-
-def merge_ims_twostep(
-    df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, progbar=True
-):
-    df = df.sort(["rt_values", "quad_low_mz_values"])
-    breaks = _get_breaks_multi(
-        df["rt_values"].to_numpy(),
-        df["quad_low_mz_values"].to_numpy(),
-    )
-    my_iter = tqdm(
-        zip(breaks[:-1], breaks[1:]),
-        total=len(breaks) - 1,
-        disable=not progbar,
-        desc="Merging in 2d",
-    )
-    out_vals = {
-        "mz_values": [],
-        "corrected_intensity_values": [],
-        "quad_low_mz_values": [],
-        "quad_high_mz_values": [],
-        "rt_values": [],
-        "mobility_low_values": [],
-        "mobility_high_values": [],
-    }
-    skipped = 0
-    total = len(breaks) - 1
-
-    for start, end in my_iter:
-        chunk = df[start:end]
-
-        mzs = np.concatenate(chunk["mz_values"])
-        imss = np.concatenate(
-            [[x] * len(y) for x, y in zip(chunk["mobility_values"], chunk["mz_values"])]
-        )
-        intensities = np.concatenate(chunk["corrected_intensity_values"])
-        prior_intensity = intensities.sum()
-        in_len = len(mzs)
-
-        (mzs, imss), intensities = dbscan_collapse_multi(
-            [mzs, imss],
-            value_max_dists=[mz_distance, ims_distance],
-            intensities=intensities,
-            min_neighbors=min_neighbors,
-            expansion_iters=50,
-        )
-        mzs, intensities = dbscan_collapse(
-            mzs,
-            intensities=intensities,
-            value_max_dist=mz_distance,
-            min_neighbors=1,
-            expansion_iters=50,
-        )
-
-        new_intensities = intensities.sum()
-        assert new_intensities <= prior_intensity
-
-        if len(mzs):
-            my_iter.set_postfix({"out_len": len(mzs), "in_len": in_len})
-            out_vals["mz_values"].append(mzs)
-            out_vals["corrected_intensity_values"].append(intensities)
-            out_vals["rt_values"].append(chunk["rt_values"][0])
-            out_vals["quad_low_mz_values"].append(chunk["quad_low_mz_values"][0])
-            out_vals["quad_high_mz_values"].append(chunk["quad_high_mz_values"][0])
-            out_vals["mobility_low_values"].append(chunk["mobility_values"].min())
-            out_vals["mobility_high_values"].append(chunk["mobility_values"].max())
-        else:
-            skipped += 1
-
-    logger.info(
-        f"Finished simple ims merge, skipped {skipped}/{total} spectra for not having"
-        " any peaks"
-    )
-    return pl.DataFrame(out_vals)
-
-def __remove_low(lst, index_lst, current_val, lowest_val, max_diff):
-    """Internal function mean to be used within _iter_with_window.
-    
-    It removes elements from a temporary list until the difference between
-    the current value and the lowest value is less than max_diff.
-    """
-    while lst and (current_val - lowest_val > max_diff):
-        lst.pop(0)
-        index_lst.pop(0)
-        lowest_val = lst[0] if lst else current_val
-
-    return lst, index_lst, lowest_val
-
-def _iter_with_window(df, rt_window_max=1):
-    """Iterates over the dataframe with a window of rt_window_max.
-    
-    It progressively generates windows of data that are split in the
-    rt dimension and share quad isolation.
-
-    For example if the passed rts are [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] and
-    the rt_window_max is 2:
-    The expected yielded groups will be:
-    [1, 2] 3 [4, 5]
-       [2, 3] 4 [5, 6] 
-          [3, 4] 5 [6, 7] 
-             [4, 5] 6 [7, 8] 
-                [5, 6] 7 [8, 9] 
-                   [6, 7] 8 [9, 10]
-                      [7, 8] 9 [10]
-                         [8, 9] 10
-
-
-    """
-    df = df.sort(["quad_low_mz_values", "rt_values"])
-    breaks = _get_breaks_multi(
-        df["quad_low_mz_values"].to_numpy(),
-    )
-    for q_start, q_end in zip(breaks[:-1], breaks[1:]):
-        chunk = df[q_start:q_end]
-        chunk = chunk.sort(["rt_values"])
-        rt_breaks = _get_breaks_multi(chunk["rt_values"].to_numpy())
-        neighborhood_before = []
-        neighborhood_after = []
-        rts_before = []
-        rts_after = []
-
-        current_rt = None
-        current_elem = None
-
-        # TODO consider whether to store intermediates as kdtrees,
-        # since they would otherwise be calculated later, nontheless ATM
-        # the easiest implementation is to just pass it to the dbscan as
-        # elements with intensity 0
-        for start, end in zip(rt_breaks[:-1], rt_breaks[1:]):
-            subchunk = chunk[start:end]
-            if current_rt is None:
-                current_rt = subchunk["rt_values"][0]
-            
-            neighborhood_after.append(subchunk)
-            latest_rt = subchunk["rt_values"][0]
-            rts_after.append(latest_rt)
-
-            earliest_rt = rts_after[0] if not rts_before else rts_before[0]
-
-            # Yield a neighbor
-
-            # while the current rt is more than rt_window_max away from the latest
-            # rt in the after neighborhood. Yield one
-
-            # move the current to the before, and the first after to the current
-            # Then remove all before elements that are too far away from the current
-            # rt
-
-            while rts_after and (latest_rt - current_rt > rt_window_max):
-                rts_before, neighborhood_before, earliest_rt = __remove_low(
-                    rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max)
-                if current_elem is None:
-                    current_rt = rts_after.pop(0)
-                    current_elem = neighborhood_after.pop(0)
-
-                yield current_elem, neighborhood_before, neighborhood_after[:-1]
-                neighborhood_before.append(current_elem)
-                rts_before.append(current_rt)
-
-                current_rt = rts_after.pop(0)
-                current_elem = neighborhood_after.pop(0)
-
-            rts_before, neighborhood_before, earliest_rt = __remove_low(
-                rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max)
-            
-
-        # Since there can be some left over, yield them
-        # This section of logic is really not pretty but works.
-        # I would gladly take a contribution refactoring this.
-        last = False
-        while neighborhood_after or last:
-            if current_elem is not None:
-                yield current_elem, neighborhood_before, neighborhood_after
-                neighborhood_before.append(current_elem)
-                rts_before.append(current_rt)
-
-            if not neighborhood_after and last:
-                break
-            else:
-                current_rt = rts_after.pop(0)
-                current_elem = neighborhood_after.pop(0)
-                if not neighborhood_after:
-                    last = True
-
-            rts_before, neighborhood_before, earliest_rt = __remove_low(
-                rts_before, neighborhood_before, current_rt, earliest_rt, rt_window_max)
-
-
-def test_iter_with_window():
-    fakedata = pl.DataFrame(
-        {
-            "rt_values": [1, 2, 3, 4, 5, 6, 7, 8, 9],
-            "quad_low_mz_values": [1, 1, 1, 1, 1, 1, 1, 1, 1],
-        }
-    )
-    first = next(_iter_with_window(fakedata, rt_window_max=2))
-
-    for i, (x, w, z) in enumerate(_iter_with_window(fakedata, rt_window_max=2)):
-        assert len(w) == min(i, 2)
-        assert len(z) == min(8-i, 2), f"min(8-i, 2); i {i}, len(z) {len(z)}"
-
-    assert len(list(_iter_with_window(fakedata, rt_window_max=2))) == 9
-    assert len(z) == 0
-    assert x["rt_values"][0] == 9
-    assert first[0]["rt_values"][0] == 1
-    assert len(first[1]) == 0
+    return pl.concat(out_vals, axis=0)

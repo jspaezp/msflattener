@@ -2,4 +2,7 @@
 *.hdf
 *.mzml
 *.mzML*
+*.mzML
 *.zip
+*.bin
+*.html

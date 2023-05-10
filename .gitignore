@@ -3,3 +3,13 @@ venv/
 .vscode
 test.parquet
 *.egg-info
+data/*.pin
+data/*.tsv
+data/comet*
+data/sage*
+data/mokapot*
+data/*.json
+
+dist/
+lib/
+target

@@ -11,7 +11,7 @@ import polars as pl
 import numpy as np
 
 # Data from the alphatims paper from the mann lab
-out = get_timstof_data("/Users/sebastianpaez/git/msflattener/data/20210510_TIMS03_EVO03_PaSk_MA_HeLa_50ng_5_6min_DDA_S1-B1_1_25185.d", progbar=False, safe=False)
+out = get_timstof_data("data/20210510_TIMS03_EVO03_PaSk_MA_HeLa_50ng_5_6min_DDA_S1-B1_1_25185.d", progbar=False, safe=False)
 print(out)
 
 ```
@@ -30,7 +30,7 @@ QUAD_LOW_VAL=-1
 
 promise = (
     pl.col("rt_values")
-    .is_between(*RT_LIMS) & 
+    .is_between(*RT_LIMS) &
     pl.col("quad_low_mz_values")
     .is_between(QUAD_LOW_VAL-0.01, QUAD_LOW_VAL+0.011)
 )

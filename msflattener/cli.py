@@ -1,12 +1,7 @@
 import rich_click as click
 
-from .bruker import get_timstof_data, centroid_ims, merge_ims_simple, merge_ims_twostep
+from .bruker import get_timstof_data
 from .mzml import get_mzml_data, write_mzml
-
-# msflattener
-# msflattener --to_mzml
-# msflattener --no_collapse_ims/collapse_ims
-# msflattener --min_peaks 10
 
 
 @click.group()
@@ -36,14 +31,9 @@ def cli():
     help="Whether to show progress bars.",
 )
 def bruker(file, output, out_format, min_peaks, progbar):
-    dat = get_timstof_data(file, min_peaks=min_peaks, progbar=progbar)
-    # dat = merge_ims_simple(dat,min_neighbors=15, mz_distance=0.01, progbar=progbar)
-    # dat = merge_ims_simple(dat,min_neighbors=15, mz_distance=0.01, ims_distance=0.01, progbar=progbar)
-    dat = centroid_ims(
-        dat, min_neighbors=2, mz_distance=0.02, ims_distance=0.02, progbar=progbar
-    )
+    dat = get_timstof_data(file, min_peaks=min_peaks, progbar=progbar, centroid=True)
     if out_format == "parquet":
-        dat.to_parquet(output)
+        dat.write_parquet(output)
     elif out_format == "mzml":
         write_mzml(dat, output)
     else:
@@ -55,7 +45,7 @@ def bruker(file, output, out_format, min_peaks, progbar):
     "--file",
     prompt="File Name",
     type=click.Path(exists=True),
-    help="The person to greet.",
+    help="The file to read data from!",
 )
 @click.option("--output", type=click.Path(exists=False), help="Name of the output file")
 @click.option("--min_peaks", default=10, help="Number of greetings.")

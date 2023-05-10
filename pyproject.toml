@@ -32,6 +32,9 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.scripts]
+msflattener = "msflattener:cli.cli"
+
 [tool.setuptools_scm]
 
 [project.readme]

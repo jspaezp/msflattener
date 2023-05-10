@@ -1,21 +1,10 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
-
-
-def _find_neighbors_sorted(array, max_distance):
-    assert np.all(np.diff(array) >= 0), "Array not sorted"
-    neighbors = {i: {"neighbors": set(), "count": 0} for i in range(len(array))}
-    ii = 0
-    for ix, x in enumerate(array):
-        ii = np.searchsorted(array, x - max_distance, side="left", sorter=None)
-        ij = np.searchsorted(array, x + max_distance, side="right", sorter=None)
-        neighbors[ix]["neighbors"] = set(range(ii, ij))
-        neighbors[ix]["count"] = ij - ii
-
-    return neighbors
 
 
 def _simplify_neighbors(
@@ -90,15 +79,17 @@ def dbscan_nd(
     value_max_dists: list[float],
     min_neighbors: int,
     order: list[int],
-    count_only_values_list: list[np.array] | None = None,
     expansion_iters: int = 50,
 ) -> dict[int : set[int]]:
     """Find neighbors in n-dimensional space."""
+    nleaves = max(2 * min_neighbors, math.ceil(math.log10(len(values_list[0]))))
+    obs = np.stack([x / y for x, y in zip(values_list, value_max_dists)]).T
     tree = KDTree(
-        np.stack([x / y for x, y in zip(values_list, value_max_dists)]).T,
-        leafsize=2 * min_neighbors,
+        obs,
+        leafsize=nleaves,
     )
     comb_neighs2 = tree.query_pairs(1)
+
     out = {}
     for k, v in comb_neighs2:
         out.setdefault(k, {k}).add(v)
@@ -109,33 +100,13 @@ def dbscan_nd(
             out.setdefault(i, {i})
         combined_neighbors = out
     else:
-        if count_only_values_list is not None:
-            combined_neighbors = {k: {"count": len(v), "v": v} for k, v in out.items()}
-            other_tree = KDTree(
-                np.stack(
-                    [x / y for x, y in zip(count_only_values_list, value_max_dists)]
-                ).T,
-                leafsize=10 * min_neighbors,
-            )
-            comb_neighs2 = tree.query_ball_tree(other_tree, 1)
-            for k, v in enumerate(comb_neighs2):
-                combined_neighbors.setdefault(k, {"count": 1, "v": {k}})[
-                    "count"
-                ] += len(v)
+        combined_neighbors = {k: v for k, v in out.items() if len(v) >= min_neighbors}
 
-            combined_neighbors = {
-                k: v["v"]
-                for k, v in combined_neighbors.items()
-                if v["count"] >= min_neighbors
-            }
-        else:
-            combined_neighbors = {
-                k: v for k, v in out.items() if len(v) >= min_neighbors
-            }
-
-    return _simplify_neighbors(
+    s_out = _simplify_neighbors(
         combined_neighbors, order=order, expansion_iters=expansion_iters
     )
+
+    return s_out
 
 
 def dbscan_collapse(
@@ -176,7 +147,6 @@ def dbscan_collapse_multi(
     intensities: np.array,
     min_neighbors: int,
     expansion_iters: int = 10,
-    count_only_values_list: None | list[np.array] = None,
 ) -> tuple[list[np.array], np.array]:
     """Collapse a set of values based on a set of distances.
 
@@ -208,7 +178,6 @@ def dbscan_collapse_multi(
         min_neighbors=min_neighbors,
         order=order,
         expansion_iters=expansion_iters,
-        count_only_values_list=count_only_values_list,
     )
 
     fin_intensities = np.array(

@@ -1,6 +1,6 @@
 import rich_click as click
 
-from .bruker import centroid_ims, get_timstof_data
+from .bruker import get_timstof_data
 from .mzml import get_mzml_data, write_mzml
 
 
@@ -31,10 +31,7 @@ def cli():
     help="Whether to show progress bars.",
 )
 def bruker(file, output, out_format, min_peaks, progbar):
-    dat = get_timstof_data(file, min_peaks=min_peaks, progbar=progbar)
-    dat = centroid_ims(
-        dat, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, progbar=progbar
-    )
+    dat = get_timstof_data(file, min_peaks=min_peaks, progbar=progbar, centroid=True)
     if out_format == "parquet":
         dat.write_parquet(output)
     elif out_format == "mzml":

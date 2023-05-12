@@ -18,7 +18,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-    "alphatims >= 1.0.7",
+    "alphatims @ git+http://github.com/jspaezp/alphatims#feature/dockerfile",
     "polars >= 0.17.11",
     "pandas >= 2.0.0",
     "numpy >= 1.23.5",

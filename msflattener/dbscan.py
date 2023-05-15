@@ -13,7 +13,7 @@ def _simplify_neighbors(
     used = set()
     out_neighbors = {}
     for o in order:
-        if o in neighbors:
+        if o in neighbors and o not in used:
             for _ in range(expansion_iters):
                 new_neighbors = neighbors[o].copy()
                 start_len = len(new_neighbors)
@@ -29,9 +29,10 @@ def _simplify_neighbors(
                     break
             if len(neighbors[o]):
                 out_neighbors[o] = neighbors.pop(o)
+                out_neighbors[o].add(o)
                 used.update(out_neighbors[o])
 
-    return out_neighbors
+    return out_neighbors, used
 
 
 def dbscan_1d(
@@ -102,11 +103,11 @@ def dbscan_nd(
     else:
         combined_neighbors = {k: v for k, v in out.items() if len(v) >= min_neighbors}
 
-    s_out = _simplify_neighbors(
+    s_out, used = _simplify_neighbors(
         combined_neighbors, order=order, expansion_iters=expansion_iters
     )
 
-    return s_out
+    return s_out, used
 
 
 def dbscan_collapse(
@@ -122,8 +123,8 @@ def dbscan_collapse(
     arr = values[sorting]
     intensities = intensities[sorting]
 
-    order = np.argsort(intensities)
-    neighbors = dbscan_1d(
+    order = np.argsort(-intensities.astype(np.float64))
+    neighbors, _used = dbscan_1d(
         arr,
         value_max_dist,
         min_neighbors=min_neighbors,
@@ -171,8 +172,8 @@ def dbscan_collapse_multi(
     assert len(values_list) == len(value_max_dists)
     assert all(len(values_list[0]) == len(x) for x in values_list)
 
-    order = np.argsort(intensities)
-    combined_neighbors = dbscan_nd(
+    order = np.argsort(-intensities.astype(np.float64))
+    combined_neighbors, used = dbscan_nd(
         values_list=values_list,
         value_max_dists=value_max_dists,
         min_neighbors=min_neighbors,
@@ -183,6 +184,7 @@ def dbscan_collapse_multi(
     fin_intensities = np.array(
         [intensities[list(x)].sum() for x in combined_neighbors.values()]
     )
+    unused_vals = np.setdiff1d(order, np.array(list(used)))
     fin_values_list = []
     for arr in values_list:
         tmp = np.array(
@@ -191,5 +193,11 @@ def dbscan_collapse_multi(
                 for x, y in zip(combined_neighbors.values(), fin_intensities)
             ]
         )
+        tmp = np.concatenate([tmp, arr[unused_vals].astype(tmp.dtype)], axis=0)
         fin_values_list.append(tmp)
+
+    fin_intensities = np.concatenate(
+        [fin_intensities, intensities[unused_vals].astype(fin_intensities.dtype)],
+        axis=0,
+    )
     return fin_values_list, fin_intensities

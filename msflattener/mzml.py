@@ -243,8 +243,17 @@ def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, No
     """
     curr_parent = None
     curr_children = []
-    for id, row in enumerate(df.sort("rt_values").iter_rows(named=True)):
+    for id, row in enumerate(
+        df.sort(["rt_values", "precursor_mz_values"]).iter_rows(named=True)
+    ):
         row["id"] = id
+
+        # u, inv = np.unique(np.array(row["mz_values"]).round(2), return_inverse=True)
+        # sums = np.zeros(len(u), dtype=np.float64)
+        # np.add.at(sums, inv, np.array(row["corrected_intensity_values"], dtype=np.float64))
+        # row["mz_values"] = u
+        # row["corrected_intensity_values"] = sums
+
         # If the current row is a parent, and there are already children, yield
         if row["quad_low_mz_values"] < 0:
             if curr_parent is not None:
@@ -292,6 +301,7 @@ def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
                     out.write_spectrum(
                         scan["mz_values"],
                         scan["corrected_intensity_values"],
+                        scan_start_time=scan["rt_values"] / 60,
                         id=scan["id"],
                         params=[
                             "MS1 Spectrum",
@@ -306,15 +316,28 @@ def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
                     # Write MSn scans
                     for prod in products:
                         ms2_scans += 1
-                        prec_mz = (
-                            prod["quad_high_mz_values"] + prod["quad_low_mz_values"]
-                        ) / 2
-                        offset = prec_mz - prod["quad_low_mz_values"]
+                        prec_mz = prod["precursor_mz_values"]
+                        offset_low = prec_mz - prod["quad_low_mz_values"]
+                        offset_high = prod["quad_high_mz_values"] - prec_mz
+
+                        prec_info = {
+                            "mz": prec_mz,
+                            # "intensity": prod.precursor_intensity,
+                            "scan_id": scan["id"],
+                            "activation": [
+                                "beam-type collisional dissociation",
+                                {"collision energy": 25},
+                            ],
+                            "isolation_window": [offset_low, prec_mz, offset_high],
+                        }
+
+                        if "precursor_charge" in prod:
+                            prec_info["charge"] = prod["precursor_charge"]
 
                         out.write_spectrum(
                             prod["mz_values"],
                             prod["corrected_intensity_values"],
-                            scan_start_time=prod["rt_values"],
+                            scan_start_time=prod["rt_values"] / 60,
                             id=prod["id"],
                             params=[
                                 "MSn Spectrum",
@@ -326,17 +349,7 @@ def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
                                 },
                             ],
                             # Include precursor information
-                            precursor_information={
-                                "mz": prec_mz,
-                                # "intensity": prod.precursor_intensity,
-                                # "charge": prod.precursor_charge,
-                                "scan_id": scan["id"],
-                                "activation": [
-                                    "beam-type collisional dissociation",
-                                    {"collision energy": 25},
-                                ],
-                                "isolation_window": [offset, prec_mz, offset],
-                            },
+                            precursor_information=prec_info,
                         )
         logger.info(
             f"Written {ms1_scans} MS1 scans and {ms2_scans} MS2 scans to {out_path}"

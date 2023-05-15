@@ -12,7 +12,7 @@ import numpy as np
 import seaborn as sns
 
 # Data from the alphatims paper from the mann lab
-out = get_timstof_data("data/20210510_TIMS03_EVO03_PaSk_MA_HeLa_50ng_5_6min_DDA_S1-B1_1_25185.d", progbar=False, safe=False)
+out = get_timstof_data("data/20210510_TIMS03_EVO03_PaSk_MA_HeLa_50ng_5_6min_DDA_S1-B1_1_25185.d", progbar=False, safe=False, centroid=False)
 # Subsetting to only 10 secs
 out = out.filter(pl.col("rt_values").is_between(200, 210))
 
@@ -33,6 +33,7 @@ print(out)
 
 ```{python}
 MZ_LIMS=(898, 902)
+# MZ_LIMS=(899.6, 900.0)
 IMS_LIMS = (0.80, 1.20)
 RT_LIMS = (200, 210)
 QUAD_LOW_VAL=-1
@@ -47,13 +48,23 @@ def filter_and_melt(df):
     unnest_cols = ['mz_values', 'corrected_intensity_values']
     if "mobility_values" in df.columns and hasattr(df["mobility_values"][0], "__len__"):
         unnest_cols.append("mobility_values")
-    out = df.filter(promise).explode(unnest_cols).filter(pl.col("mz_values").is_between(*MZ_LIMS)).filter(pl.col("rt_values").is_between(205, 210))
+    out = (
+        df
+        .filter(promise)
+        .explode(unnest_cols)
+        .filter(
+            pl.col("mz_values").is_between(*MZ_LIMS)
+        )
+        .filter(pl.col("rt_values")
+        .is_between(205, 210))
+    )
 
     if "mobility_values" in out.columns:
-        out = out.filter(pl.col("mobility_values").is_between(*IMS_LIMS))
+        out = out.filter(pl.col('mobility_values').is_between(*IMS_LIMS))
 
     return out
 
+sns.set_context("notebook", font_scale=1.5, rc={"lines.linewidth": 0.02})
 sns.relplot(data=filter_and_melt(out).to_pandas(), x= "mz_values", y ="mobility_values", col="rt_values", size="corrected_intensity_values", hue="corrected_intensity_values", col_wrap=5)
 ```
 
@@ -64,29 +75,10 @@ simple_merge = merge_ims_simple(out, min_neighbors=3, mz_distance=0.01, progbar=
 
 ```{python}
 %%time
-centroid_merge = centroid_ims(out, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, progbar=False)
+centroid_merge = centroid_ims(out, min_neighbors=1, mz_distance=0.01, ims_distance=0.02, progbar=False)
 ```
 
 ```{python}
+sns.set_context("notebook", font_scale=1.5, rc={"lines.linewidth": 0.02})
 sns.relplot(data=filter_and_melt(centroid_merge).to_pandas(), x= "mz_values", y ="mobility_values", col="rt_values", size="corrected_intensity_values", hue="corrected_intensity_values", col_wrap=5)
-```
-
-```{python}
-%%time
-slidewindow = centroid_ims_slidingwindow(out, min_neighbors=10, mz_distance=0.01, ims_distance=0.01, rt_distance=2, progbar=False)
-```
-
-```{python}
-sns.relplot(data=filter_and_melt(slidewindow).to_pandas(), x= "mz_values", y ="mobility_values", col="rt_values", size="corrected_intensity_values", hue="corrected_intensity_values", col_wrap=5)
-```
-
-```{python}
-%%time
-twostep = merge_ims_twostep(out, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, progbar=False)
-```
-
-
-```{python}
-g = sns.FacetGrid(filter_and_melt(slidewindow).to_pandas(), col_wrap=5, col="rt_values")
-g.map_dataframe(sns.scatterplot, x="mz_values", y="mobility_values", hue="corrected_intensity_values", size="corrected_intensity_values")
 ```

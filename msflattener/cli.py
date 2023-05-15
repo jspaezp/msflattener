@@ -22,7 +22,7 @@ def cli():
 @click.option("--to_mzml", "out_format", flag_value="mzml", default=False)
 @click.option("--to_parquet", "out_format", flag_value="parquet", default=True)
 @click.option(
-    "--min_peaks", default=10, help="Minimum number of peaks to keep a spectrum"
+    "--min_peaks", default=5, help="Minimum number of peaks to keep a spectrum"
 )
 @click.option(
     "--progbar/--no-progbar",
@@ -30,8 +30,15 @@ def cli():
     default=True,
     help="Whether to show progress bars.",
 )
-def bruker(file, output, out_format, min_peaks, progbar):
-    dat = get_timstof_data(file, min_peaks=min_peaks, progbar=progbar, centroid=True)
+@click.option(
+    "--centroid/--no-centroid",
+    default=True,
+    help="Whether to centroid the IMS dimension.",
+)
+def bruker(file, output, out_format, min_peaks, progbar, centroid):
+    dat = get_timstof_data(
+        file, min_peaks=min_peaks, progbar=progbar, centroid=centroid
+    )
     if out_format == "parquet":
         dat.write_parquet(output)
     elif out_format == "mzml":

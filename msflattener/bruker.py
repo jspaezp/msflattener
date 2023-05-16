@@ -1,4 +1,5 @@
 import os
+from functools import partial
 from multiprocessing import Pool, cpu_count
 
 import numpy as np
@@ -10,27 +11,41 @@ from tqdm.auto import tqdm
 from .dbscan import dbscan_collapse, dbscan_collapse_multi
 from .utils import _get_breaks_multi
 
-SCHEMA = {
+SCHEMA_DDA = {
     "mz_values": pl.List(pl.Float64),
-    "corrected_intensity_values": pl.List(pl.UInt32),
+    "corrected_intensity_values": pl.List(pl.Float64),
+    "mobility_values": pl.List(pl.Float64),
     "rt_values": pl.Float64,
-    "mobility_values": pl.Float64,
+    "quad_low_mz_values": pl.Float64,
+    "quad_high_mz_values": pl.Float64,
+    "precursor_mz_values": pl.Float64,
+    "precursor_charge": pl.Int8,
+    "precursor_intensity": pl.Int64,
+}
+
+SCHEMA_DIA = {
+    "mz_values": pl.List(pl.Float64),
+    "corrected_intensity_values": pl.List(pl.Float64),
+    "mobility_values": pl.List(pl.Float64),
+    "rt_values": pl.Float64,
     "quad_low_mz_values": pl.Float64,
     "quad_high_mz_values": pl.Float64,
 }
-
-NON_NESTED = [
-    "rt_values",
-    "mobility_values",
-    "quad_low_mz_values",
-    "quad_high_mz_values",
-]
 
 YIELDING_FIELDS = [
     "rt_values",
     "quad_low_mz_values",
     "quad_high_mz_values",
+    "precursor_mz_values",
+    "precursor_charge",
+    "precursor_intensity",
 ]
+
+
+def __get_nesting_level(x):
+    if hasattr(x, "__len__"):
+        return 1 + __get_nesting_level(x[0])
+    return 0
 
 
 def _iter_timstof_data(
@@ -48,6 +63,7 @@ def _iter_timstof_data(
         return_rt_values=True,
         return_quad_mz_values=True,
         return_mobility_values=True,
+        return_precursor_indices=True,
         raw_indices_sorted=True,
     )
     if safe:
@@ -56,6 +72,7 @@ def _iter_timstof_data(
             return_rt_values=True,
             return_quad_mz_values=True,
             return_mobility_values=True,
+            return_precursor_indices=True,
             raw_indices_sorted=True,
         )
         for k, v in context2.items():
@@ -90,6 +107,31 @@ def _iter_timstof_data(
         for k, v in context.items():
             out[k] = v
 
+        if timstof_file.acquisition_mode in {"ddaPASEF", "noPASEF"}:
+            if context["precursor_indices"] == 0:
+                out["precursor_mz_values"] = -1.0
+                out["precursor_charge"] = -1
+                out["precursor_intensity"] = -1
+            else:
+                prec_mz = timstof_file._precursors.iloc[
+                    context["precursor_indices"] - 1
+                ].MonoisotopicMz
+                charge = timstof_file._precursors.iloc[
+                    context["precursor_indices"] - 1
+                ].Charge
+                prec_intensity = timstof_file._precursors.iloc[
+                    context["precursor_indices"] - 1
+                ].Intensity
+                out["precursor_intensity"] = prec_intensity
+                if np.isnan(prec_mz):
+                    out["precursor_mz_values"] = timstof_file._precursors.iloc[
+                        context["precursor_indices"] - 1
+                    ].LargestPeakMz
+                    out["precursor_charge"] = 2
+                else:
+                    out["precursor_mz_values"] = prec_mz
+                    out["precursor_charge"] = charge
+
         if last_rt is not None:
             any_change = (
                 last_rt != out["rt_values"]
@@ -114,11 +156,48 @@ def _iter_timstof_data(
         yield chunk_out
 
 
-def __centroid_chunk(chunk_dict):
+def __expand_like(arr, like_arr, dtype=np.float64):
+    out = np.concatenate(
+        [np.full_like(y, fill_value=ai, dtype=dtype) for ai, y in zip(arr, like_arr)]
+    )
+    return out
+
+
+def __unnest_chunk(chunk_dict):
     mzs = np.concatenate(chunk_dict["mz_values"])
     if len(mzs) < 1:
         return
     intensities = np.concatenate(chunk_dict["corrected_intensity_values"])
+    imss = __expand_like(
+        chunk_dict["mobility_values"], chunk_dict["mz_values"], dtype=np.float64
+    )
+    if "precursor_charge" in chunk_dict:
+        if isinstance(chunk_dict["precursor_charge"], int):
+            pass
+        elif isinstance(chunk_dict["precursor_charge"], float):
+            pass
+        else:
+            chunk_dict["precursor_charge"] = __expand_like(
+                chunk_dict["precursor_charge"], chunk_dict["mz_values"], np.int32
+            )
+            chunk_dict["precursor_intensity"] = __expand_like(
+                chunk_dict["precursor_intensity"], chunk_dict["mz_values"], np.float64
+            )
+
+    chunk_dict["mz_values"] = mzs
+    chunk_dict["mobility_values"] = imss
+    chunk_dict["corrected_intensity_values"] = intensities
+
+    return chunk_dict
+
+
+def __centroid_chunk(chunk_dict, mz_distance, ims_distance, min_neighbors=1):
+    mzs = np.concatenate(chunk_dict["mz_values"])
+    prior_len = len(mzs)
+    if len(mzs) < 1:
+        return
+    intensities = np.concatenate(chunk_dict["corrected_intensity_values"])
+    intensities = intensities.astype(np.float64)
     imss = chunk_dict["mobility_values"]
     imss = np.concatenate(
         [
@@ -129,25 +208,30 @@ def __centroid_chunk(chunk_dict):
     prior_intensity = intensities.sum()
     (mzs, imss), intensities = dbscan_collapse_multi(
         [mzs, imss],
-        value_max_dists=[0.01, 0.01],
+        value_max_dists=[mz_distance, ims_distance],
         intensities=intensities,
-        min_neighbors=3,
-        expansion_iters=10,
+        min_neighbors=min_neighbors,
+        expansion_iters=3,
     )
     new_intensities = intensities.sum()
-    assert new_intensities <= prior_intensity
+    assert new_intensities <= prior_intensity, (new_intensities, prior_intensity)
 
-    if len(mzs) < 5:
+    if len(mzs) < 1:
         return
 
     chunk_dict["mz_values"] = mzs
     chunk_dict["corrected_intensity_values"] = intensities
     chunk_dict["mobility_values"] = imss
-    return chunk_dict
+    compression = prior_len / len(mzs)
+    signal_representation = new_intensities / prior_intensity
+    return chunk_dict, {
+        "compression": compression,
+        "signal_representation": signal_representation,
+    }
 
 
 def get_timstof_data(
-    path: os.PathLike, min_peaks=15, progbar=True, safe=False, centroid=False
+    path: os.PathLike, min_peaks=5, progbar=True, safe=False, centroid=False
 ) -> pl.DataFrame:
     """Reads timsTOF data from a file and returns a DataFrame with the data.
 
@@ -166,38 +250,73 @@ def get_timstof_data(
         Whether to centroid the data, by default False
     """
     timstof_file = bruker.TimsTOF(path, mmap_detector_events=True)
+    if timstof_file.acquisition_mode in {"ddaPASEF", "noPASEF"}:
+        schema = SCHEMA_DDA
+    elif timstof_file.acquisition_mode == "diaPASEF":
+        schema = SCHEMA_DIA
+    else:
+        raise ValueError("Unknown acquisition mode")
 
-    final_out = {k: [] for k in SCHEMA}
+    final_out = {k: [] for k in schema}
 
     if centroid:
+        compressions = []
+
         with Pool(processes=cpu_count()) as pool:
             for chunk_dict in pool.imap_unordered(
-                __centroid_chunk,
+                partial(
+                    __centroid_chunk,
+                    mz_distance=0.01,
+                    ims_distance=0.02,
+                    min_neighbors=1,
+                ),
                 _iter_timstof_data(
                     timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
                 ),
             ):
-                if chunk_dict is None:
-                    continue
-                for k, v in chunk_dict.items():
-                    final_out[k].append(v)
+                if chunk_dict is not None:
+                    chunk_dict, compression = chunk_dict
+                    compressions.append(compression)
+                    for k in schema:
+                        final_out[k].append(chunk_dict[k])
+
+        compression = np.array([x["compression"] for x in compressions])
+        signal_representation = np.array(
+            [x["signal_representation"] for x in compressions]
+        )
+        logger.info(
+            f"Compression: {np.mean(compression):.2f} +/- {np.std(compression):.2f}"
+        )
+        logger.info(
+            f"Signal representation: {np.mean(signal_representation):.2f} +/-"
+            f" {np.std(signal_representation):.2f}"
+        )
 
     else:
         for chunk_dict in _iter_timstof_data(
             timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
         ):
-            for k, v in chunk_dict.items():
-                final_out[k].append(v)
+            unnested = __unnest_chunk(chunk_dict)
+            if unnested is not None:
+                for k, v in unnested.items():
+                    if k in schema:
+                        final_out[k].append(v)
 
     del timstof_file
 
-    final_out = {
-        k: np.array(v) if not isinstance(v[0], np.ndarray) else v
-        for k, v in final_out.items()
-    }
-    if centroid:
-        SCHEMA["mobility_values"] = SCHEMA["mz_values"]
-    final_out = pl.DataFrame(final_out, schema=SCHEMA)
+    final_out_f = {}
+    for k, v in final_out.items():
+        if k in schema:
+            if not isinstance(v[0], np.ndarray):
+                final_out_f[k] = np.array(v)
+
+            else:
+                final_out_f[k] = v
+
+    final_out_f["corrected_intensity_values"] = [
+        x.astype(np.float64) for x in final_out_f["corrected_intensity_values"]
+    ]
+    final_out = pl.DataFrame(final_out_f, schema=schema)
 
     return final_out
 
@@ -257,36 +376,6 @@ def merge_ims_simple(df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, progba
     return pl.DataFrame(out_vals)
 
 
-def _centroid_ims_chunk(chunk, mz_distance, ims_distance, min_neighbors):
-    mzs = np.concatenate(chunk["mz_values"])
-    imss = np.concatenate(
-        [[x] * len(y) for x, y in zip(chunk["mobility_values"], chunk["mz_values"])]
-    )
-    intensities = np.concatenate(chunk["corrected_intensity_values"])
-    prior_intensity = intensities.sum()
-    in_len = len(mzs)
-
-    (mzs, imss), intensities = dbscan_collapse_multi(
-        [mzs, imss],
-        value_max_dists=[mz_distance, ims_distance],
-        intensities=intensities,
-        min_neighbors=min_neighbors,
-        expansion_iters=10,
-    )
-    new_intensities = intensities.sum()
-    assert new_intensities <= prior_intensity
-
-    out_vals = {}
-    out_vals["mz_values"] = mzs
-    out_vals["corrected_intensity_values"] = intensities
-    out_vals["mobility_values"] = imss
-    out_vals["rt_values"] = chunk["rt_values"][0]
-    out_vals["quad_low_mz_values"] = chunk["quad_low_mz_values"][0]
-    out_vals["quad_high_mz_values"] = chunk["quad_high_mz_values"][0]
-
-    return pl.DataFrame(out_vals), in_len
-
-
 def centroid_ims(
     df: pl.DataFrame, min_neighbors=3, mz_distance=0.01, ims_distance=0.01, progbar=True
 ):
@@ -295,6 +384,13 @@ def centroid_ims(
         df["rt_values"].to_numpy(),
         df["quad_low_mz_values"].to_numpy(),
     )
+    if "precursor_charge" in df.columns:
+        schema = SCHEMA_DDA
+    else:
+        schema = SCHEMA_DIA
+
+    final_out = {k: [] for k in schema}
+
     total = len(breaks) - 1
     my_iter = tqdm(
         zip(breaks[:-1], breaks[1:]),
@@ -302,20 +398,23 @@ def centroid_ims(
         disable=not progbar,
         desc="Merging in 2d",
     )
-    out_vals = []
     skipped = 0
     for start, end in my_iter:
         chunk = df[start:end]
-        out_chunk, in_len = _centroid_ims_chunk(
-            chunk=chunk,
-            mz_distance=mz_distance,
-            ims_distance=ims_distance,
-            min_neighbors=min_neighbors,
-        )
+        if len(chunk) == 0:
+            skipped += 1
+            continue
 
-        if len(out_chunk):
-            my_iter.set_postfix({"out_len": len(out_chunk), "in_len": in_len})
-            out_vals.append(out_chunk)
+        out_chunk = __centroid_chunk(
+            chunk.to_dict(as_series=False), mz_distance, ims_distance, min_neighbors
+        )
+        if out_chunk is not None:
+            out_chunk, compression = out_chunk
+
+            if len(out_chunk):
+                my_iter.set_postfix(compression)
+                for k in schema:
+                    final_out[k].append(out_chunk[k])
         else:
             skipped += 1
 
@@ -323,5 +422,17 @@ def centroid_ims(
         f"Finished simple ims merge, skipped {skipped}/{total} spectra for not having"
         " any peaks"
     )
+    final_out_f = {}
+    for k, v in final_out.items():
+        if k in schema:
+            if not isinstance(v[0], np.ndarray):
+                final_out_f[k] = np.array(v).flatten()
 
-    return pl.concat(out_vals, axis=0)
+            else:
+                final_out_f[k] = v
+
+    final_out_f["corrected_intensity_values"] = [
+        x.astype(np.float64) for x in final_out_f["corrected_intensity_values"]
+    ]
+    final_out = pl.DataFrame(final_out_f, schema=schema)
+    return final_out

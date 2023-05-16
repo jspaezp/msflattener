@@ -1,4 +1,5 @@
 import os
+from functools import partial
 from multiprocessing import Pool, cpu_count
 
 import numpy as np
@@ -261,14 +262,14 @@ def get_timstof_data(
     if centroid:
         compressions = []
 
-        def partial_fun(x):
-            return __centroid_chunk(
-                x, mz_distance=0.01, ims_distance=0.02, min_neighbors=1
-            )
-
         with Pool(processes=cpu_count()) as pool:
             for chunk_dict in pool.imap_unordered(
-                partial_fun,
+                partial(
+                    __centroid_chunk,
+                    mz_distance=0.01,
+                    ims_distance=0.02,
+                    min_neighbors=1,
+                ),
                 _iter_timstof_data(
                     timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
                 ),

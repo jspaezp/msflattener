@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -8,11 +10,56 @@ from scipy.spatial import KDTree
 
 @dataclass
 class BidirectionalNeighbors:
+    """A class to store neighbors in both directions.
+
+    It is essentially two dictionaries of int:set[int] where the
+    keys in one dictionary are the values in the other dictionary.
+
+    Examples
+    --------
+    >>> neighbors = BidirectionalNeighbors()
+    >>> neighbors.add_pair((1, 2))
+    >>> neighbors.add_pair((2, 3))
+    >>> neighbors.add_pair((3, 4))
+    >>> neighbors
+    >>> neighbors = BidirectionalNeighbors.from_neighbor_list(
+    ...     [(1,2), (2,3), (41,32), ()]
+    ... )
+    >>> neighbors
+    """
+
     left_to_right: dict[int : set[int]]
     right_to_left: dict[int : set[int]]
 
     @classmethod
-    def from_neighbor_list(cls, neighbor_list):
+    def from_neighbor_list(
+        cls, neighbor_list: list[list[int]]
+    ) -> BidirectionalNeighbors:
+        """Initialize from a list of neighbors.
+
+        Parameters
+        ----------
+        neighbor_list : list[list[int]]
+            A list of neighbors. Each element in the list is a list of
+            neighbors for the corresponding index in the list.
+            For example, if the list is [[1,2], [3,4], [5,6]], then
+            the neighbors for index 0 are 1 and 2, the neighbors for
+            index 1 are 3 and 4, and the neighbors for index 2 are 5 and 6.
+
+        Returns
+        -------
+        BidirectionalNeighbors
+            A BidirectionalNeighbors instance.
+
+        Examples
+        --------
+        >>> neighbors = BidirectionalNeighbors.from_neighbor_list(
+        ...     [[1,2], [3,4], [5,6]]
+        ... )
+        >>> neighbors
+        BidirectionalNeighbors(left_to_right={0: {1, 2}, 1: {3, 4}, 2: {5, 6}},
+          right_to_left={1: {0}, 2: {0}, 3: {1}, 4: {1}, 5: {2}, 6: {2}})
+        """
         left_to_right = {}
         right_to_left = {}
         for k, v in neighbor_list.items():
@@ -21,32 +68,55 @@ class BidirectionalNeighbors:
                 right_to_left.setdefault(n, set()).add(k)
         return cls(left_to_right, right_to_left)
 
-    def add_pairs(self, pairs: list[tuple[int, int]]):
+    def add_pairs(self, pairs: list[tuple[int, int]]) -> None:
+        """Add pairs of neighbors.
+
+        Parameters
+        ----------
+        pairs : list[tuple[int, int]]
+            A list of pairs of neighbors. Each pair is a tuple of two
+            integers. The first integer is the index of the left neighbor
+            and the second integer is the index of the right neighbor.
+        """
         for p in pairs:
             self.add_pair(p)
 
-    def add_pair(self, pair: tuple[int, int]):
+    def add_pair(self, pair: tuple[int, int]) -> None:
+        """Add a pair of neighbors."""
         self.left_to_right.setdefault(pair[0], set()).add(pair[1])
         self.right_to_left.setdefault(pair[1], set()).add(pair[0])
 
 
 class RTCircularBuffer:
-    def __init__(self, max_rt_diff_keep) -> None:
+    """A circular buffer that stores a RT window.
+
+    A circular buffer that removes elements when the retention time
+    difference between the first and last elements is greater than a
+    specified value.
+    """
+
+    def __init__(self, max_rt_diff_keep: float) -> None:
         self.max_rt_diff_keep = max_rt_diff_keep
         self.buffer = []
         self.rts = []
         self.exrtas_buffer = []
 
-    def append(self, element, rt_value, extras=None):
+    def append(self, element, rt_value: float, extras: Any = None) -> list[list[Any]]:
+        """Append an element to the buffer.
+
+        After appending it removes all elements that no longer
+        fit in the buffer and returns them.
+        """
         self.add(element, rt_value, extras)
         return self.remove_out_of_range()
 
-    def add(self, element, rt_value, extras=None):
+    def add(self, element: Any, rt_value: float, extras: Any = None) -> None:
+        """Add an element to the buffer."""
         self.buffer.append(element)
         self.rts.append(rt_value)
         self.exrtas_buffer.append(extras)
 
-    def _out_of_range_indices(self):
+    def _out_of_range_indices(self) -> bool:
         if not self.buffer:
             return False
         if (self.rts[-1] - self.rts[0]) > self.max_rt_diff_keep:
@@ -70,6 +140,15 @@ class RTCircularBuffer:
         yield from elems
 
     def remove_out_of_range(self) -> list[list[Any]]:
+        """Remove elements that are out of range.
+
+        The elements that are removed are defined by the _elems_to_pop method.
+
+        Returns
+        -------
+        list[list[Any]]
+            A list of the removed elements.
+        """
         removed = []
         while self._out_of_range_indices():
             popped = []
@@ -81,20 +160,35 @@ class RTCircularBuffer:
 
 
 class TreeCircularBuffer(RTCircularBuffer):
-    def __init__(self, max_rt, max_distances) -> None:
+    """A circular buffer that stores a RT window and a KDTree.
+
+    A circular buffer that removes elements when the retention time
+    difference between the first and last elements is greater than a
+    specified value. It also stores a KDTree of the elements.
+
+    Parameters
+    ----------
+    max_rt : float
+        max retention time distance to have in the buffer.
+
+    max_distances : list[float]
+        The maximum distance for each dimension.
+    """
+
+    def __init__(self, max_rt: float, max_distances: list[float]) -> None:
         super().__init__(max_rt)
         self.max_distances = max_distances
 
     def add(
         self, element: list[np.ndarray], rt_value: float, extras: dict[str, Any] = None
-    ):
+    ) -> None:
         if extras is None:
             extras = {}
 
         tree = KDTree(np.stack([e / y for e, y in zip(element, self.max_distances)]).T)
         if self.exrtas_buffer:
             last_tree = self.exrtas_buffer[-1]["tree"]
-            neighbors = tree.query_ball_tree(last_tree, 1)
+            neighbors: list[list[int]] = tree.query_ball_tree(last_tree, 1)
             out_neighbors = BidirectionalNeighbors.from_neighbor_list(neighbors)
         else:
             out_neighbors = BidirectionalNeighbors({}, {})
@@ -112,11 +206,9 @@ class BufferWithCenter:
     [0, 1, 2] 3 [4, 5, 6] <- 7
     [1, 2, 3] 4 [5, 6, 7]
 
-
-
     """
 
-    def __init__(self, max_rt, max_distances) -> None:
+    def __init__(self, max_rt: float, max_distances: list[float]) -> None:
         self.past_buffer = RTCircularBuffer(max_rt)
         self.future_buffer = TreeCircularBuffer(
             max_rt_diff_keep=max_rt, max_distances=max_distances
@@ -127,7 +219,7 @@ class BufferWithCenter:
         self.max_distances = max_distances
         self.trace_queue = []
 
-    def append(self, element, rt_value, extras=None):
+    def append(self, element: Any, rt_value: float, extras: Any = None) -> None:
         """Adds new elements to the future buffer.
 
         If the future buffer starts having elements that are out of range,

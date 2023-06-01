@@ -304,7 +304,7 @@ def get_timstof_data(
                 _iter_timstof_data(
                     timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
                 ),
-                chunksize=50,
+                chunksize=5,
             ):
                 if chunk_dict is not None:
                     chunk_dict, compression = chunk_dict

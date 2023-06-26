@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -22,14 +22,16 @@ class BidirectionalNeighbors:
     >>> neighbors.add_pair((2, 3))
     >>> neighbors.add_pair((3, 4))
     >>> neighbors
+    BidirectionalNeighbors(left_to_right={1: {2}, 2: {3}, 3: {4}}, right_to_left={2: {1}, 3: {2}, 4: {3}})
     >>> neighbors = BidirectionalNeighbors.from_neighbor_list(
     ...     [(1,2), (2,3), (41,32), ()]
     ... )
     >>> neighbors
+    BidirectionalNeighbors(left_to_right={0: {1, 2}, 1: {2, 3}, 2: {32, 41}}, right_to_left={1: {0}, 2: {0, 1}, 3: {1}, 41: {2}, 32: {2}})
     """
 
-    left_to_right: dict[int : set[int]]
-    right_to_left: dict[int : set[int]]
+    left_to_right: dict[int : set[int]] = field(default_factory=dict)
+    right_to_left: dict[int : set[int]] = field(default_factory=dict)
 
     @classmethod
     def from_neighbor_list(
@@ -57,12 +59,13 @@ class BidirectionalNeighbors:
         ...     [[1,2], [3,4], [5,6]]
         ... )
         >>> neighbors
-        BidirectionalNeighbors(left_to_right={0: {1, 2}, 1: {3, 4}, 2: {5, 6}},
-          right_to_left={1: {0}, 2: {0}, 3: {1}, 4: {1}, 5: {2}, 6: {2}})
+        BidirectionalNeighbors(left_to_right={0: {1, 2}, 1: {3, 4}, 2: {5, 6}}, right_to_left={1: {0}, 2: {0}, 3: {1}, 4: {1}, 5: {2}, 6: {2}})
         """
         left_to_right = {}
         right_to_left = {}
-        for k, v in neighbor_list.items():
+        for k, v in enumerate(neighbor_list):
+            if not v:
+                continue
             left_to_right[k] = set(v)
             for n in v:
                 right_to_left.setdefault(n, set()).add(k)
@@ -87,6 +90,26 @@ class BidirectionalNeighbors:
         self.right_to_left.setdefault(pair[1], set()).add(pair[0])
 
 
+def test_circular_buffer():
+    buffer = RTCircularBuffer(max_rt_diff_keep=10)
+    buffer.append([1, 2, 3], rt_value=2, extras={"value": 1})
+    buffer.append([3, 4, 5], rt_value=3, extras={"value": 2})
+
+    assert len(buffer.buffer) == 2
+    out = buffer.append([1, 2, 3], rt_value=20)
+    assert out is not None
+
+    # first element appended, first element in the list
+    assert out[0][0] == 1
+    # same for the second append
+    assert out[1][0] == 3
+
+    # first rt
+    assert out[0][1] == 2
+    # second rt
+    assert out[1][1] == 3
+
+
 class RTCircularBuffer:
     """A circular buffer that stores a RT window.
 
@@ -99,7 +122,7 @@ class RTCircularBuffer:
         self.max_rt_diff_keep = max_rt_diff_keep
         self.buffer = []
         self.rts = []
-        self.exrtas_buffer = []
+        self.extras_buffer = []
 
     def append(self, element, rt_value: float, extras: Any = None) -> list[list[Any]]:
         """Append an element to the buffer.
@@ -114,7 +137,7 @@ class RTCircularBuffer:
         """Add an element to the buffer."""
         self.buffer.append(element)
         self.rts.append(rt_value)
-        self.exrtas_buffer.append(extras)
+        self.extras_buffer.append(extras)
 
     def _out_of_range_indices(self) -> bool:
         if not self.buffer:
@@ -136,7 +159,7 @@ class RTCircularBuffer:
         This method should be over-written if the child class accumulates more
         elements than the current class.
         """
-        elems = [self.buffer, self.rts, self.exrtas_buffer]
+        elems = [self.buffer, self.rts, self.extras_buffer]
         yield from elems
 
     def remove_out_of_range(self) -> list[list[Any]]:
@@ -151,6 +174,7 @@ class RTCircularBuffer:
         """
         removed = []
         while self._out_of_range_indices():
+            # todo consider if this should be a dictionary or named tupple
             popped = []
             for elem in self._elems_to_pop():
                 popped.append(elem.pop(0))
@@ -173,6 +197,26 @@ class TreeCircularBuffer(RTCircularBuffer):
 
     max_distances : list[float]
         The maximum distance for each dimension.
+
+    Examples
+    --------
+    >>> my_buff = TreeCircularBuffer(10, [0.01, 0.1])
+    >>> my_buff.append(
+    ...     element=[np.array((10.1, 20.1)),
+    ...         np.array((1.2, 5.2))], rt_value=1)
+    []
+    >>> my_buff.append(
+    ...     element=[np.array((10.12, 20.11)),
+    ...         np.array((1.21, 5.2))], rt_value=5)
+    []
+    >>> my_buff.extras_buffer[0]['tree']
+    <scipy.spatial._kdtree.KDTree object at ...>
+    >>> my_buff.extras_buffer[1]['last_neighbors']
+    BidirectionalNeighbors(left_to_right={1: {1}}, right_to_left={1: {1}})
+    >>> my_buff.append(
+    ...     element=[np.array((10.12, 20.11)),np.array((1.21, 5.2))],
+    ...     rt_value=15)
+    [[[...], 1, {'tree': ..., 'last_neighbors': ...}]]
     """
 
     def __init__(self, max_rt: float, max_distances: list[float]) -> None:
@@ -186,8 +230,8 @@ class TreeCircularBuffer(RTCircularBuffer):
             extras = {}
 
         tree = KDTree(np.stack([e / y for e, y in zip(element, self.max_distances)]).T)
-        if self.exrtas_buffer:
-            last_tree = self.exrtas_buffer[-1]["tree"]
+        if self.extras_buffer:
+            last_tree = self.extras_buffer[-1]["tree"]
             neighbors: list[list[int]] = tree.query_ball_tree(last_tree, 1)
             out_neighbors = BidirectionalNeighbors.from_neighbor_list(neighbors)
         else:
@@ -263,15 +307,17 @@ class BufferWithCenter:
         if not in_range_before or not in_range_after:
             return []
 
+        # Defining here "having a trace" as having a neighbor before and after
         has_trace = set.intersection(
             self.current_extras["last_neighbors"].left_to_right.keys(),
-            self.future_buffer.exrtas_buffer[in_range_after[0]][
+            self.future_buffer.extras_buffer[in_range_after[0]][
                 "last_neighbors"
             ].right_to_left.keys(),
         )
         if not has_trace:
             return []
 
+        # TODO check if this is the same as self.current_extras["tree"]
         temp_tree = KDTree(
             np.stack([e / y for e, y in zip(self.current_elem, self.max_distances)]).T
         )
@@ -279,13 +325,13 @@ class BufferWithCenter:
             BidirectionalNeighbors.from_neighbor_list(
                 temp_tree.query_ball_tree(x["tree"], 1)
             )
-            for x in self.past_buffer.exrtas_buffer
+            for x in self.past_buffer.extras_buffer
         ]
         neighbors_after = [
             BidirectionalNeighbors.from_neighbor_list(
                 temp_tree.query_ball_tree(x["tree"], 1)
             )
-            for x in self.future_buffer.exrtas_buffer
+            for x in self.future_buffer.extras_buffer
         ]
         trace_length = len(neighbors_before) + len(neighbors_after) + 1
         center_index = len(neighbors_before)
@@ -296,13 +342,13 @@ class BufferWithCenter:
             for i, x in enumerate(neighbors_before):
                 if t in x:
                     extract_i = x[t]
-                    extract_from = self.past_buffer.exrtas_buffer[i]["intensity"]
+                    extract_from = self.past_buffer.extras_buffer[i]["intensity"]
                     ci = extract_from[extract_i].sum().astype(np.float32)
                     intensities[len(neighbors_before) - i - 1] = ci
             for i, x in enumerate(neighbors_after):
                 if t in x:
                     extract_i = x[t]
-                    extract_from = self.past_buffer.exrtas_buffer[i]["intensity"]
+                    extract_from = self.past_buffer.extras_buffer[i]["intensity"]
                     ci = extract_from[extract_i].sum().astype(np.float32)
                     intensities[len(neighbors_before) + i + 1] = ci
 

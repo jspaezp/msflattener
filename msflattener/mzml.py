@@ -243,9 +243,11 @@ def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, No
     """
     curr_parent = None
     curr_children = []
-    for id, row in enumerate(
-        df.sort(["rt_values", "precursor_mz_values"]).iter_rows(named=True)
-    ):
+    if "precursor_mz_values" not in df.columns:
+        sort_cols = ["rt_values", "quad_low_mz_values"]
+    else:
+        sort_cols = ["rt_values", "precursor_mz_values"]
+    for id, row in enumerate(df.sort(sort_cols).iter_rows(named=True)):
         row["id"] = id
 
         # u, inv = np.unique(np.array(row["mz_values"]).round(2), return_inverse=True)
@@ -291,6 +293,35 @@ def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
     with MzMLWriter(open(out_path, "wb"), close=True) as out:
         # Add default controlled vocabularies
         out.controlled_vocabularies()
+        out.file_description(["MS1 spectrum", "MSn spectrum", "centroid spectrum"])
+        instrument_configurations = []
+        source = out.Source(1, ["nanospray inlet", "quadrupole"])
+        analyzer = out.Analyzer(2, ["time-of-flight"])
+        detector = out.Detector(3, ["microchannel plate detector", "photomultiplier"])
+        instrument_configurations.append(
+            out.InstrumentConfiguration(
+                id="IC1",
+                component_list=[source, analyzer, detector],
+            )
+        )
+
+        out.instrument_configuration_list(instrument_configurations)
+        out.software_list(
+            [
+                {
+                    "id": "msflattener",
+                    "version": "0.0.0",
+                    "params": [
+                        "MSFlattener",
+                    ],
+                }
+            ]
+        )
+
+        # StateTransitionWarning: Transition from 'file_description'
+        # to 'run' is not valid. Expected one of
+        # ['reference_param_group_list', 'sample_list', 'software_list']
+
         # Open the run and spectrum list sections
         with out.run(id="my_analysis"):
             spectrum_count = len(df)
@@ -316,7 +347,13 @@ def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:
                     # Write MSn scans
                     for prod in products:
                         ms2_scans += 1
-                        prec_mz = prod["precursor_mz_values"]
+                        if "precursor_mz_values" in prod:
+                            prec_mz = prod["precursor_mz_values"]
+                        else:
+                            prec_mz = (
+                                prod["quad_low_mz_values"] + prod["quad_high_mz_values"]
+                            ) / 2
+
                         offset_low = prec_mz - prod["quad_low_mz_values"]
                         offset_high = prod["quad_high_mz_values"] - prec_mz
 

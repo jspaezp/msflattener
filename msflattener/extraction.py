@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+from scipy.spatial import KDTree
+
+
+@dataclass
+class BidirectionalNeighbors:
+    """A class to store neighbors in both directions.
+
+    It is essentially two dictionaries of int:set[int] where the
+    keys in one dictionary are the values in the other dictionary.
+
+    Examples
+    --------
+    >>> neighbors = BidirectionalNeighbors()
+    >>> neighbors.add_pair((1, 2))
+    >>> neighbors.add_pair((2, 3))
+    >>> neighbors.add_pair((3, 4))
+    >>> neighbors
+    BidirectionalNeighbors(left_to_right={1: {2}, 2: {3}, 3: {4}}, right_to_left={2: {1}, 3: {2}, 4: {3}})
+    >>> neighbors = BidirectionalNeighbors.from_neighbor_list(
+    ...     [(1,2), (2,3), (41,32), ()]
+    ... )
+    >>> neighbors
+    BidirectionalNeighbors(left_to_right={0: {1, 2}, 1: {2, 3}, 2: {32, 41}}, right_to_left={1: {0}, 2: {0, 1}, 3: {1}, 41: {2}, 32: {2}})
+    """
+
+    left_to_right: dict[int : set[int]] = field(default_factory=dict)
+    right_to_left: dict[int : set[int]] = field(default_factory=dict)
+
+    @classmethod
+    def from_neighbor_list(
+        cls, neighbor_list: list[list[int]]
+    ) -> BidirectionalNeighbors:
+        """Initialize from a list of neighbors.
+
+        Parameters
+        ----------
+        neighbor_list : list[list[int]]
+            A list of neighbors. Each element in the list is a list of
+            neighbors for the corresponding index in the list.
+            For example, if the list is [[1,2], [3,4], [5,6]], then
+            the neighbors for index 0 are 1 and 2, the neighbors for
+            index 1 are 3 and 4, and the neighbors for index 2 are 5 and 6.
+
+        Returns
+        -------
+        BidirectionalNeighbors
+            A BidirectionalNeighbors instance.
+
+        Examples
+        --------
+        >>> neighbors = BidirectionalNeighbors.from_neighbor_list(
+        ...     [[1,2], [3,4], [5,6]]
+        ... )
+        >>> neighbors
+        BidirectionalNeighbors(left_to_right={0: {1, 2}, 1: {3, 4}, 2: {5, 6}}, right_to_left={1: {0}, 2: {0}, 3: {1}, 4: {1}, 5: {2}, 6: {2}})
+        """
+        left_to_right = {}
+        right_to_left = {}
+        for k, v in enumerate(neighbor_list):
+            if not v:
+                continue
+            left_to_right[k] = set(v)
+            for n in v:
+                right_to_left.setdefault(n, set()).add(k)
+        return cls(left_to_right, right_to_left)
+
+    def add_pairs(self, pairs: list[tuple[int, int]]) -> None:
+        """Add pairs of neighbors.
+
+        Parameters
+        ----------
+        pairs : list[tuple[int, int]]
+            A list of pairs of neighbors. Each pair is a tuple of two
+            integers. The first integer is the index of the left neighbor
+            and the second integer is the index of the right neighbor.
+        """
+        for p in pairs:
+            self.add_pair(p)
+
+    def add_pair(self, pair: tuple[int, int]) -> None:
+        """Add a pair of neighbors."""
+        self.left_to_right.setdefault(pair[0], set()).add(pair[1])
+        self.right_to_left.setdefault(pair[1], set()).add(pair[0])
+
+
+def test_circular_buffer():
+    buffer = RTCircularBuffer(max_rt_diff_keep=10)
+    buffer.append([1, 2, 3], rt_value=2, extras={"value": 1})
+    buffer.append([3, 4, 5], rt_value=3, extras={"value": 2})
+
+    assert len(buffer.buffer) == 2
+    out = buffer.append([1, 2, 3], rt_value=20)
+    assert out is not None
+
+    # first element appended, first element in the list
+    assert out[0][0] == 1
+    # same for the second append
+    assert out[1][0] == 3
+
+    # first rt
+    assert out[0][1] == 2
+    # second rt
+    assert out[1][1] == 3
+
+
+class RTCircularBuffer:
+    """A circular buffer that stores a RT window.
+
+    A circular buffer that removes elements when the retention time
+    difference between the first and last elements is greater than a
+    specified value.
+    """
+
+    def __init__(self, max_rt_diff_keep: float) -> None:
+        self.max_rt_diff_keep = max_rt_diff_keep
+        self.buffer = []
+        self.rts = []
+        self.extras_buffer = []
+
+    def append(self, element, rt_value: float, extras: Any = None) -> list[list[Any]]:
+        """Append an element to the buffer.
+
+        After appending it removes all elements that no longer
+        fit in the buffer and returns them.
+        """
+        self.add(element, rt_value, extras)
+        return self.remove_out_of_range()
+
+    def add(self, element: Any, rt_value: float, extras: Any = None) -> None:
+        """Add an element to the buffer."""
+        self.buffer.append(element)
+        self.rts.append(rt_value)
+        self.extras_buffer.append(extras)
+
+    def _out_of_range_indices(self) -> bool:
+        if not self.buffer:
+            return False
+        if (self.rts[-1] - self.rts[0]) > self.max_rt_diff_keep:
+            return True
+        else:
+            return False
+
+    def _elems_to_pop(self) -> Iterator:
+        """Yields elements to pop.
+
+        The definition of 'element' here is the instance attributes that grow
+        when something is appended to the class itself.
+
+        Returns a list of the elements from which the first element should be popped
+        when the buffer is out of range.
+
+        This method should be over-written if the child class accumulates more
+        elements than the current class.
+        """
+        elems = [self.buffer, self.rts, self.extras_buffer]
+        yield from elems
+
+    def remove_out_of_range(self) -> list[list[Any]]:
+        """Remove elements that are out of range.
+
+        The elements that are removed are defined by the _elems_to_pop method.
+
+        Returns
+        -------
+        list[list[Any]]
+            A list of the removed elements.
+        """
+        removed = []
+        while self._out_of_range_indices():
+            # todo consider if this should be a dictionary or named tupple
+            popped = []
+            for elem in self._elems_to_pop():
+                popped.append(elem.pop(0))
+            removed.append(popped)
+
+        return removed
+
+
+class TreeCircularBuffer(RTCircularBuffer):
+    """A circular buffer that stores a RT window and a KDTree.
+
+    A circular buffer that removes elements when the retention time
+    difference between the first and last elements is greater than a
+    specified value. It also stores a KDTree of the elements.
+
+    Parameters
+    ----------
+    max_rt : float
+        max retention time distance to have in the buffer.
+
+    max_distances : list[float]
+        The maximum distance for each dimension.
+
+    Examples
+    --------
+    >>> my_buff = TreeCircularBuffer(10, [0.01, 0.1])
+    >>> my_buff.append(
+    ...     element=[np.array((10.1, 20.1)),
+    ...         np.array((1.2, 5.2))], rt_value=1)
+    []
+    >>> my_buff.append(
+    ...     element=[np.array((10.12, 20.11)),
+    ...         np.array((1.21, 5.2))], rt_value=5)
+    []
+    >>> my_buff.extras_buffer[0]['tree']
+    <scipy.spatial._kdtree.KDTree object at ...>
+    >>> my_buff.extras_buffer[1]['last_neighbors']
+    BidirectionalNeighbors(left_to_right={1: {1}}, right_to_left={1: {1}})
+    >>> my_buff.append(
+    ...     element=[np.array((10.12, 20.11)),np.array((1.21, 5.2))],
+    ...     rt_value=15)
+    [[[...], 1, {'tree': ..., 'last_neighbors': ...}]]
+    """
+
+    def __init__(self, max_rt: float, max_distances: list[float]) -> None:
+        super().__init__(max_rt)
+        self.max_distances = max_distances
+
+    def add(
+        self, element: list[np.ndarray], rt_value: float, extras: dict[str, Any] = None
+    ) -> None:
+        if extras is None:
+            extras = {}
+
+        tree = KDTree(np.stack([e / y for e, y in zip(element, self.max_distances)]).T)
+        if self.extras_buffer:
+            last_tree = self.extras_buffer[-1]["tree"]
+            neighbors: list[list[int]] = tree.query_ball_tree(last_tree, 1)
+            out_neighbors = BidirectionalNeighbors.from_neighbor_list(neighbors)
+        else:
+            out_neighbors = BidirectionalNeighbors({}, {})
+
+        extras["tree"] = tree
+        extras["last_neighbors"] = out_neighbors
+        super().add(element, rt_value, extras)
+
+
+class BufferWithCenter:
+    """Buffer that keeps a center and distances before and after.
+
+    Distance = 2
+    -- past - c -future--
+    [0, 1, 2] 3 [4, 5, 6] <- 7
+    [1, 2, 3] 4 [5, 6, 7]
+
+    """
+
+    def __init__(self, max_rt: float, max_distances: list[float]) -> None:
+        self.past_buffer = RTCircularBuffer(max_rt)
+        self.future_buffer = TreeCircularBuffer(
+            max_rt_diff_keep=max_rt, max_distances=max_distances
+        )
+        self.current_elem = None
+        self.current_extras = None
+        self.current_rt = None
+        self.max_distances = max_distances
+        self.trace_queue = []
+
+    def append(self, element: Any, rt_value: float, extras: Any = None) -> None:
+        """Adds new elements to the future buffer.
+
+        If the future buffer starts having elements that are out of range,
+        They are moved to the center buffer and the center buffer is moved to
+        the past buffer.
+
+        """
+        removed = self.future_buffer.append(element, rt_value, extras)
+        for x in removed:
+            element, rt_value, extras = x
+            if self.current_elem is not None:
+                self.trace_queue.extend(self.get_current_traces())
+            self.past_buffer.append(
+                self.current_elem, self.current_rt, self.current_extras
+            )
+            self.current_elem = element
+            self.current_rt = rt_value
+            self.current_extras = extras
+
+    def get_current_traces(self) -> list[Trace]:
+        # get elements that have a trace (defined as neighbor before and after)
+        # subset the element arrays to have only those indices
+        # make a kdtree with that subset
+        # query that kdtree vs all other trees in range
+        # integrate intensities.
+        # subset for the ones where the apex is the current element (+- some tolerance ...)
+        # output would be a list of intensities for every element with a trace.
+        # expand the trace
+
+        in_range_before = [
+            i
+            for i, x in enumerate(self.past_buffer.rts)
+            if (self.current_rt - x) < self.max_rt
+        ]
+        in_range_after = [
+            i
+            for i, x in enumerate(self.future_buffer.rts)
+            if (x - self.current_rt) < self.max_rt
+        ]
+
+        if not in_range_before or not in_range_after:
+            return []
+
+        # Defining here "having a trace" as having a neighbor before and after
+        has_trace = set.intersection(
+            self.current_extras["last_neighbors"].left_to_right.keys(),
+            self.future_buffer.extras_buffer[in_range_after[0]][
+                "last_neighbors"
+            ].right_to_left.keys(),
+        )
+        if not has_trace:
+            return []
+
+        # TODO check if this is the same as self.current_extras["tree"]
+        temp_tree = KDTree(
+            np.stack([e / y for e, y in zip(self.current_elem, self.max_distances)]).T
+        )
+        neighbors_before = [
+            BidirectionalNeighbors.from_neighbor_list(
+                temp_tree.query_ball_tree(x["tree"], 1)
+            )
+            for x in self.past_buffer.extras_buffer
+        ]
+        neighbors_after = [
+            BidirectionalNeighbors.from_neighbor_list(
+                temp_tree.query_ball_tree(x["tree"], 1)
+            )
+            for x in self.future_buffer.extras_buffer
+        ]
+        trace_length = len(neighbors_before) + len(neighbors_after) + 1
+        center_index = len(neighbors_before)
+
+        for t in has_trace:
+            intensities = np.zeros(trace_length, dtype=np.float32)
+            intensities[len(neighbors_before)] = self.current_elem[t]
+            for i, x in enumerate(neighbors_before):
+                if t in x:
+                    extract_i = x[t]
+                    extract_from = self.past_buffer.extras_buffer[i]["intensity"]
+                    ci = extract_from[extract_i].sum().astype(np.float32)
+                    intensities[len(neighbors_before) - i - 1] = ci
+            for i, x in enumerate(neighbors_after):
+                if t in x:
+                    extract_i = x[t]
+                    extract_from = self.past_buffer.extras_buffer[i]["intensity"]
+                    ci = extract_from[extract_i].sum().astype(np.float32)
+                    intensities[len(neighbors_before) + i + 1] = ci
+
+            Trace(
+                rts_in_seconds=[],
+                intensities=intensities,
+                mz=self.current_elem[0][t],
+                extras={},
+                center=center_index,
+            )
+
+
+@dataclass
+class Trace:
+    rts_in_seconds: np.ndarray
+    intensities: np.ndarray
+    mz: float
+    extras: dict[str, Any]
+    center: int
+
+    def __len__(self) -> int:
+        return len(self.intensities)
+
+
+# on pop ....
+#     if len(self.buffer) > 0:
+#         asdasda
+
+# Calculate distances along the window ...
+# Keep continous matches in both directions
+# For every point, find the closest point in the other direction
+# If the closest point is within a certain distance, keep it
+# If the closest point is not within a certain distance, remove it
+# Then expand using the indices in the next element.

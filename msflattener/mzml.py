@@ -250,12 +250,6 @@ def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, No
     for id, row in enumerate(df.sort(sort_cols).iter_rows(named=True)):
         row["id"] = id
 
-        # u, inv = np.unique(np.array(row["mz_values"]).round(2), return_inverse=True)
-        # sums = np.zeros(len(u), dtype=np.float64)
-        # np.add.at(sums, inv, np.array(row["corrected_intensity_values"], dtype=np.float64))
-        # row["mz_values"] = u
-        # row["corrected_intensity_values"] = sums
-
         # If the current row is a parent, and there are already children, yield
         if row["quad_low_mz_values"] < 0:
             if curr_parent is not None:

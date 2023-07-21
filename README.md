@@ -122,6 +122,53 @@ from msflattener.mzml import write_mzml
 write_mzml(two_d_merge, "foo.mzml")
 ```
 
+## Exporting to .dia
+
+https://bitbucket.org/searleb/encyclopedia/downloads/
+
+```mermaid
+erDiagram
+    precursor {
+        string SpectrumName "'index=1'"
+        int SpectrumIndex "'101'"
+        float ScanStartTime "23.1, In Seconds "
+        int MassEncodedLength "'26'"
+        blob MassArray
+        int IntensityEncodedLength
+        blob IntensityArray
+        float TIC 
+        int IonMobilityArrayEncodedLength
+        blob IonMobilityArray
+    }
+    spectra {
+        string SpectrumName
+        string PrecursorName
+        int SpectrumIndex
+        float ScanStartTime
+        float IsolationWindowLower
+        float IsolationWindowCenter
+        float IsolationWindowUpper
+        int MassEncodedLength
+        blob MassArray
+        int IntensityEncodedLength
+        blob IntensityArray
+        int IonMobilityArrayEncodedLength
+        blob IonMobilityArray
+    }
+
+    ranges {
+        float Start
+        float Stop
+        float DutyCycle
+        int NumWindows "not null"
+    }
+
+    metadata {
+        string Key
+        string Value
+    }
+```
+
 ## Acknowledgements
 
 Open source projects that I would like to acknowledge:

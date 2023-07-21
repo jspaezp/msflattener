@@ -83,11 +83,13 @@ def dbscan_nd(
     expansion_iters: int = 50,
 ) -> dict[int : set[int]]:
     """Find neighbors in n-dimensional space."""
-    nleaves = max(2 * min_neighbors, math.ceil(math.log10(len(values_list[0]))))
+    nleaves = max(2 * min_neighbors, 2*math.ceil(math.log10(len(values_list[0]))))
+    # nleaves = 32
     obs = np.stack([x / y for x, y in zip(values_list, value_max_dists)]).T
     tree = KDTree(
         obs,
         leafsize=nleaves,
+        balanced_tree=False,
     )
     comb_neighs2 = tree.query_pairs(1)
 

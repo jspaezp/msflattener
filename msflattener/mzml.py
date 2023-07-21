@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import os
 import zlib
-from collections.abc import Generator
 
 import numpy as np
 import polars as pl
@@ -16,6 +15,8 @@ from loguru import logger
 from lxml import etree
 from psims.mzml.writer import MzMLWriter
 from tqdm.auto import tqdm
+
+from msflattener.base import yield_scans
 
 ACC_TO_TYPE = {
     "MS:1000519": np.float32,
@@ -212,62 +213,6 @@ def get_mzml_data(
                 out[k].append(v)
 
     return pl.DataFrame(out)
-
-
-def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, None]:
-    """Yield scans from a DataFrame.
-
-    Parameters
-    ----------
-    df : pl.DataFrame
-        The DataFrame to yield scans from.
-        It needs to contain the following columns:
-            mz_values: np.ndarray, nested
-            corrected_intensity_values: np.ndarray, nested
-            rt_values: np.ndarray
-            quad_low_mz_values: np.ndarray
-            quad_high_mz_values: np.ndarray
-
-    Yields
-    ------
-    tuple[dict, list[dict]]
-        A tuple with the parent scan and the children scans.
-        Each scan is a dict with the following keys:
-            mz_values: np.ndarray
-            corrected_intensity_values: np.ndarray
-            rt_values: float
-            quad_low_mz_values: float
-            quad_high_mz_values: float
-            id: int
-
-    """
-    curr_parent = None
-    curr_children = []
-    for id, row in enumerate(
-        df.sort(["rt_values", "precursor_mz_values"]).iter_rows(named=True)
-    ):
-        row["id"] = id
-
-        # u, inv = np.unique(np.array(row["mz_values"]).round(2), return_inverse=True)
-        # sums = np.zeros(len(u), dtype=np.float64)
-        # np.add.at(sums, inv, np.array(row["corrected_intensity_values"], dtype=np.float64))
-        # row["mz_values"] = u
-        # row["corrected_intensity_values"] = sums
-
-        # If the current row is a parent, and there are already children, yield
-        if row["quad_low_mz_values"] < 0:
-            if curr_parent is not None:
-                yield curr_parent, curr_children
-                curr_parent = row
-                curr_children = []
-            else:
-                curr_parent = row
-
-        else:
-            curr_children.append(row)
-
-    if curr_parent is not None:
-        yield curr_parent, curr_children
 
 
 def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:

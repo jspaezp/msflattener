@@ -110,8 +110,8 @@ def _iter_timstof_data(
     # ┌───────────────┬─────────────┬──────────────┬──────────────┬──────────────┐
     # │ precursor_ind ┆ rt_values   ┆ mobility_val ┆ quad_low_mz_ ┆ quad_high_mz │
     # │ ices          ┆ ---         ┆ ues          ┆ values       ┆ _values      │
-    # │ ---           ┆ f64         ┆ ---          ┆ ---          ┆ ---          │
-    # │ i64           ┆             ┆ f64          ┆ f64          ┆ f64          │
+    # │ ---           ┆ f32         ┆ ---          ┆ ---          ┆ ---          │
+    # │ i64           ┆             ┆ f32          ┆ f32          ┆ f32          │
     # ╞═══════════════╪═════════════╪══════════════╪══════════════╪══════════════╡
     # │ 0             ┆ 0.640523    ┆ 1.371029     ┆ -1.0         ┆ -1.0         │
     # │ 0             ┆ 0.640523    ┆ 1.36996      ┆ -1.0         ┆ -1.0         │
@@ -165,6 +165,7 @@ def _iter_timstof_data(
             return_mz_values=True,
             raw_indices_sorted=True,
         )
+        out = {k: v.astype(np.float32) for k, v in out.items()}
         for k, v in context.items():
             out[k] = v
 
@@ -225,7 +226,7 @@ def __iter_timstof_data_fractioned(
     pass
 
 
-def __expand_like(arr: np.ndarray, like_arr: np.ndarray, dtype: DTypeLike = np.float64):
+def __expand_like(arr: np.ndarray, like_arr: np.ndarray, dtype: DTypeLike = np.float32):
     """Expand an array to be the same length as another array.
 
     Expands an array to be the same length as another array,
@@ -238,7 +239,7 @@ def __expand_like(arr: np.ndarray, like_arr: np.ndarray, dtype: DTypeLike = np.f
     like_arr : np.ndarray
         The array to match the length of
     dtype : np.dtype, optional
-        The dtype of the output array, by default np.float64
+        The dtype of the output array, by default np.float32
 
     Returns
     -------
@@ -248,7 +249,7 @@ def __expand_like(arr: np.ndarray, like_arr: np.ndarray, dtype: DTypeLike = np.f
     Examples
     --------
     >>> __expand_like([1, 2], [[1, 2, 3], [4, 5]])
-    array([1., 1., 1., 2., 2.])
+    array([1., 1., 1., 2., 2.], dtype=float32)
     """
     out = np.concatenate(
         [np.full_like(y, fill_value=ai, dtype=dtype) for ai, y in zip(arr, like_arr)]
@@ -269,7 +270,7 @@ def __unnest_chunk(chunk_dict: dict) -> dict | None:
         return
     intensities = np.concatenate(chunk_dict["corrected_intensity_values"])
     imss = __expand_like(
-        chunk_dict["mobility_values"], chunk_dict["mz_values"], dtype=np.float64
+        chunk_dict["mobility_values"], chunk_dict["mz_values"], dtype=np.float32
     )
     if "precursor_charge" in chunk_dict:
         if isinstance(chunk_dict["precursor_charge"], int):
@@ -281,7 +282,7 @@ def __unnest_chunk(chunk_dict: dict) -> dict | None:
                 chunk_dict["precursor_charge"], chunk_dict["mz_values"], np.int32
             )
             chunk_dict["precursor_intensity"] = __expand_like(
-                chunk_dict["precursor_intensity"], chunk_dict["mz_values"], np.float64
+                chunk_dict["precursor_intensity"], chunk_dict["mz_values"], np.float32
             )
 
     chunk_dict["mz_values"] = mzs
@@ -299,6 +300,9 @@ def __centroid_chunk(
     if len(mzs) < 1:
         return
     intensities = np.concatenate(chunk_dict["corrected_intensity_values"])
+    # For some reason the dbscan section needs to be run on 64 bit precision
+    # othersise, it has a bug where the final total intensity is higher than
+    # the prior total intensity. (more intensity after cluster collapse)
     intensities = intensities.astype(np.float64)
     imss = chunk_dict["mobility_values"]
     imss = np.concatenate(
@@ -316,13 +320,17 @@ def __centroid_chunk(
         expansion_iters=3,
     )
     new_intensities = intensities.sum()
-    assert new_intensities <= prior_intensity, (new_intensities, prior_intensity)
-
+    assert new_intensities <= prior_intensity, (
+        "New total intensity is higher than the prior"
+        " total intensity "
+        f"(New {new_intensities}, Prior {prior_intensity})"
+        f" Diff = {new_intensities - prior_intensity}"
+    )
     if len(mzs) < 1:
         return
 
     chunk_dict["mz_values"] = mzs
-    chunk_dict["corrected_intensity_values"] = intensities
+    chunk_dict["corrected_intensity_values"] = intensities.astype(np.float32)
     chunk_dict["mobility_values"] = imss
     compression = prior_len / len(mzs)
     signal_representation = new_intensities / prior_intensity
@@ -355,7 +363,8 @@ def get_timstof_data(
     centroid : bool, optional
         Whether to centroid the data, by default False
     """
-    timstof_file = bruker.TimsTOF(path, mmap_detector_events=True)
+    # The TimsTOF object requires a string as input
+    timstof_file = bruker.TimsTOF(str(path), mmap_detector_events=True)
     if timstof_file.acquisition_mode in {"ddaPASEF", "noPASEF"}:
         schema = SCHEMA_DDA
         logger.info("DDA data detected, using DDA schema")
@@ -383,12 +392,12 @@ def get_timstof_data(
                 fun,
                 data_generator,
             ):
-            ## Dead code, only left here for debugging purposes
-            ## Or when profiling some of the code.
-            # for x in _iter_timstof_data(
-            #     timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
-            # ):
-            #     chunk_dict = fun(x)
+                ## Dead code, only left here for debugging purposes
+                ## Or when profiling some of the code.
+                # for x in _iter_timstof_data(
+                #     timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
+                # ):
+                #     chunk_dict = fun(x)
 
                 if chunk_dict is not None:
                     chunk_dict, compression = chunk_dict
@@ -435,7 +444,7 @@ def get_timstof_data(
 
     logger.debug("Converting to DataFrame")
     final_out_f["corrected_intensity_values"] = [
-        x.astype(np.float64) for x in final_out_f["corrected_intensity_values"]
+        x.astype(np.float32) for x in final_out_f["corrected_intensity_values"]
     ]
     final_out = pl.DataFrame(final_out_f, schema=schema)
 
@@ -564,7 +573,7 @@ def centroid_ims(
                 final_out_f[k] = v
 
     final_out_f["corrected_intensity_values"] = [
-        x.astype(np.float64) for x in final_out_f["corrected_intensity_values"]
+        x.astype(np.float32) for x in final_out_f["corrected_intensity_values"]
     ]
     final_out = pl.DataFrame(final_out_f, schema=schema)
     return final_out

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import struct
 import zlib
-import os
 
 import numpy as np
 import polars as pl
@@ -149,9 +149,9 @@ def _extract_array(byte_array: bytes, type_str: DTypeLike = "d") -> np.ndarray:
 def _write_scan(
     scan_dict: dict, curr: sqlite3.Cursor, precursor_id: int | None = None
 ) -> None:
-    # mz_values: np.ndarray
-    # corrected_intensity_values: np.ndarray
-    # mobility_values: np.ndarray
+    # mz_values: list | np.ndarray
+    # corrected_intensity_values: list | np.ndarray
+    # mobility_values: list | np.ndarray
     # rt_values: float
     # quad_low_mz_values: float
     # quad_high_mz_values: float
@@ -167,34 +167,44 @@ def _write_scan(
     id = scan_dict["id"]
 
     scan_name = f"scan={id}"
-    tic = corrected_intensity_values.sum()
+    tic = sum(corrected_intensity_values)
 
-    mz_values = _compress_array(mz_values, "f")
-    corrected_intensity_values = _compress_array(corrected_intensity_values, "f")
-    mobility_values = _compress_array(mobility_values, "f")
+    mz_values = _compress_array(np.array(mz_values, dtype="f"), "f")
+    corrected_intensity_values = _compress_array(
+        np.array(corrected_intensity_values, dtype="f"), "f"
+    )
+    mobility_values = _compress_array(np.array(mobility_values, dtype="f"), "f")
 
     if quad_low_mz_values < 0:
         assert precursor_id is None
         input_query = " ".join(
-            "INSERT INTO precursor (",
-            ", ".join(
-                "SpectrumName ",
-                "SpectrumIndex",
-                "ScanStartTime",
-                "MassEncodedLength",
-                "MassArray",
-                "IntensityEncodedLength",
-                "IntensityArray",
-                "TIC",
-                "IonMobilityArrayEncodedLength",
-                "IonMobilityArray",
-            ),
-            ")",
-            "VALUES",
-            f" ({','.join(['?']*10)})",
+            [
+                "INSERT INTO precursor (",
+                ", ".join(
+                    [
+                        "Fraction",
+                        "SpectrumName ",
+                        "SpectrumIndex",
+                        "ScanStartTime",
+                        "MassEncodedLength",
+                        "MassArray",
+                        "IntensityEncodedLength",
+                        "IntensityArray",
+                        "TIC",
+                        "MobilityEncodedLength",
+                        "MobilityArray",
+                        "IsolationWindowLower",
+                        "IsolationWindowUpper",
+                    ]
+                ),
+                ")",
+                "VALUES",
+                f" ({','.join(['?']*13)})",
+            ]
         )
 
         values = (
+            0, # Fraction
             scan_name,
             id,
             rt_values,
@@ -205,33 +215,43 @@ def _write_scan(
             tic,
             len(mobility_values),
             mobility_values,
+            400.0, # TODO replace with actual values ...
+            1600.0, # TODO replace with actual values ...
         )
     else:
         assert precursor_id is not None
 
         precursor_name = f"scan={precursor_id}"
         input_query = " ".join(
-            "INSERT INTO precursor (",
-            ", ".join(
-                "SpectrumName ",
-                "SpectrumIndex",
-                "ScanStartTime",
-                "MassEncodedLength",
-                "MassArray",
-                "IntensityEncodedLength",
-                "IntensityArray",
-                "TIC",
-                "IonMobilityArrayEncodedLength",
-                "IonMobilityArray",
-                "IsolationWindowLower",
-                "IsolationWindowUpper",
-                "PrecursorName",
-            ),
-            ")",
-            "VALUES",
-            f" ({','.join(['?']*13)})",
+            [
+                "INSERT INTO spectra (",
+                ", ".join(
+                    [
+                        "Fraction",
+                        "SpectrumName ",
+                        "SpectrumIndex",
+                        "ScanStartTime",
+                        "MassEncodedLength",
+                        "MassArray",
+                        "IntensityEncodedLength",
+                        "IntensityArray",
+                        # "TIC",
+                        "MobilityEncodedLength",
+                        "MobilityArray",
+                        "IsolationWindowLower",
+                        "IsolationWindowUpper",
+                        "IsolationWindowCenter",
+                        "PrecursorName",
+                        "PrecursorCharge",
+                    ]
+                ),
+                ")",
+                "VALUES",
+                f" ({','.join(['?']*15)})",
+            ]
         )
         values = (
+            0, # Fraction
             scan_name,
             id,
             rt_values,
@@ -239,18 +259,24 @@ def _write_scan(
             mz_values,
             len(corrected_intensity_values),
             corrected_intensity_values,
-            tic,
+            # tic, # Oddly enought here is no TIC in the spectra table
             len(mobility_values),
             mobility_values,
             quad_low_mz_values,
             quad_high_mz_values,
+            (quad_high_mz_values + quad_low_mz_values) / 2,
             precursor_name,
+            0, # PrecursorCharge
         )
 
-    curr.execute(
-        input_query,
-        values,
-    )
+    try:
+        curr.execute(
+            input_query,
+            values,
+        )
+    except sqlite3.IntegrityError as e:
+        print(e)
+        breakpoint()
 
 
 def write_scans(df: pl.DataFrame, conn: sqlite3.Connection) -> None:
@@ -264,10 +290,13 @@ def write_scans(df: pl.DataFrame, conn: sqlite3.Connection) -> None:
     iter = yield_scans(df)
     curr = conn.cursor()
 
-    for precursor, spectra in tqdm(iter):
-        _write_scan(precursor, curr)
-        for scan in spectra:
-            _write_scan(scan, curr, precursor_id=precursor["id"])
+    with tqdm(desc="Writing precursor") as pbar:
+        for precursor, spectra in iter:
+            _write_scan(precursor, curr)
+            pbar.update(1)
+            for scan in spectra:
+                _write_scan(scan, curr, precursor_id=precursor["id"])
+                pbar.update(1)
 
     conn.commit()
 
@@ -331,8 +360,8 @@ def write_ranges(df: pl.DataFrame, conn: sqlite3.Connection) -> None:
     ):
         curr.execute(
             (
-                "INSERT INTO ranges (Start, Stop, DutyCycle, NumWindows, MobilityStart, MobilityStop)"
-                " VALUES (?, ?, ?, ?)"
+                "INSERT INTO ranges (Start, Stop, DutyCycle, NumWindows, MobilityStart,"
+                " MobilityStop) VALUES (?, ?, ?, ?)"
             ),
             (
                 quad_low_mz_values,
@@ -353,6 +382,10 @@ def write_encyclopedia(df: pl.DataFrame, output_filepath: os.PathLike) -> None:
     conn.executescript(RANGES_SCHEMA)
     conn.executescript(SPECTRA_SCHEMA)
     conn.executescript(METADATA_SCHEMA)
+
+    # For performance reasons
+    conn.execute("PRAGMA synchronous = EXTRA")
+    conn.execute("PRAGMA journal_mode = WAL")
     write_scans(df, conn)
     conn.executescript(INDEX_SCHEMA)
     conn.commit()

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<method>
+    <submethods>
+        <submethod program="OtofImpacTEMControl" revision="1">
+            <name>D:\Data\2023\202305_ForTalus\DDPASEF_10seconds.d\DDA_PASEF_lowInput_1.9sec.PaSER.m</name>
+            <files>
+                <file name="microTOFQImpacTemAcquisition.method"/>
+                <file name="diaSettings.diasqlite"/>
+                <file name="prmSettings.prmsqlite"/>
+                <file name="Maldi.method"/>
+            </files>
+        </submethod>
+        <submethod program="HyStar_Autosampler" revision="1">
+            <name>D:\Data\2023\202305_ForTalus\DDPASEF_10seconds.d\DDA_PASEF_lowInput_1.9sec.PaSER.m</name>
+            <files/>
+        </submethod>
+    </submethods>
+    <locked>false</locked>
+    <readonly>true</readonly>
+    <comment/>
+</method>

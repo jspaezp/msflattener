@@ -5,24 +5,24 @@ import polars as pl
 # TODO should I move all of this to 32 bit?
 
 SCHEMA_DDA = {
-    "mz_values": pl.List(pl.Float64),
-    "corrected_intensity_values": pl.List(pl.Float64),
-    "mobility_values": pl.List(pl.Float64),
-    "rt_values": pl.Float64,
-    "quad_low_mz_values": pl.Float64,
-    "quad_high_mz_values": pl.Float64,
-    "precursor_mz_values": pl.Float64,
+    "mz_values": pl.List(pl.Float32),
+    "corrected_intensity_values": pl.List(pl.Float32),
+    "mobility_values": pl.List(pl.Float32),
+    "rt_values": pl.Float32,
+    "quad_low_mz_values": pl.Float32,
+    "quad_high_mz_values": pl.Float32,
+    "precursor_mz_values": pl.Float32,
     "precursor_charge": pl.Int8,
-    "precursor_intensity": pl.Int64,
+    "precursor_intensity": pl.Int32,
 }
 
 SCHEMA_DIA = {
-    "mz_values": pl.List(pl.Float64),
-    "corrected_intensity_values": pl.List(pl.Float64),
-    "mobility_values": pl.List(pl.Float64),
-    "rt_values": pl.Float64,
-    "quad_low_mz_values": pl.Float64,
-    "quad_high_mz_values": pl.Float64,
+    "mz_values": pl.List(pl.Float32),
+    "corrected_intensity_values": pl.List(pl.Float32),
+    "mobility_values": pl.List(pl.Float32),
+    "rt_values": pl.Float32,
+    "quad_low_mz_values": pl.Float32,
+    "quad_high_mz_values": pl.Float32,
 }
 
 YIELDING_FIELDS = [
@@ -64,9 +64,10 @@ def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, No
     """
     curr_parent = None
     curr_children = []
-    for id, row in enumerate(
-        df.sort(["rt_values", "precursor_mz_values"]).iter_rows(named=True)
-    ):
+    sort_cols = ["rt_values", "precursor_mz_values"]
+    if "precursor_mz_values" not in df:
+        sort_cols = ["rt_values", "quad_low_mz_values"]
+    for id, row in enumerate(df.sort(sort_cols).iter_rows(named=True)):
         row["id"] = id
 
         # u, inv = np.unique(np.array(row["mz_values"]).round(2), return_inverse=True)

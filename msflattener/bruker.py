@@ -296,9 +296,9 @@ def __centroid_chunk(
     chunk_dict,
     mz_distance: float,
     ims_distance: float,
-    min_neighbors: int=1,
-    max_peaks:int=5_000,
-    min_intensity:float|int=10,
+    min_neighbors: int = 1,
+    max_peaks: int = 5_000,
+    min_intensity: float | int = 10,
 ):
     mzs = np.concatenate(chunk_dict["mz_values"])
     prior_len = len(mzs)
@@ -364,8 +364,8 @@ def get_timstof_data(
     progbar: bool = True,
     safe: bool = False,
     centroid: bool = False,
-    max_peaks_per_spectrum: int=5_000,
-    min_intensity: int|float=10,
+    max_peaks_per_spectrum: int = 5_000,
+    min_intensity: int | float = 10,
 ) -> pl.DataFrame:
     """Reads timsTOF data from a file and returns a DataFrame with the data.
 

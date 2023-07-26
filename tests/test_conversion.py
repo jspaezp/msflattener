@@ -103,4 +103,3 @@ def test_mzml_dia(shared_datadir):
 
     assert out is not None
     _check_polars_table(out, "DIA")
-

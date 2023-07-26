@@ -204,7 +204,7 @@ def _write_scan(
         )
 
         values = (
-            0, # Fraction
+            0,  # Fraction
             scan_name,
             id,
             rt_values,
@@ -215,8 +215,8 @@ def _write_scan(
             tic,
             len(mobility_values),
             mobility_values,
-            400.0, # TODO replace with actual values ...
-            1600.0, # TODO replace with actual values ...
+            400.0,  # TODO replace with actual values ...
+            1600.0,  # TODO replace with actual values ...
         )
     else:
         assert precursor_id is not None
@@ -251,7 +251,7 @@ def _write_scan(
             ]
         )
         values = (
-            0, # Fraction
+            0,  # Fraction
             scan_name,
             id,
             rt_values,
@@ -266,7 +266,7 @@ def _write_scan(
             quad_high_mz_values,
             (quad_high_mz_values + quad_low_mz_values) / 2,
             precursor_name,
-            0, # PrecursorCharge
+            0,  # PrecursorCharge
         )
 
     try:
@@ -359,10 +359,8 @@ def write_ranges(df: pl.DataFrame, conn: sqlite3.Connection) -> None:
         ranges_dict.items()
     ):
         curr.execute(
-            (
-                "INSERT INTO ranges (Start, Stop, DutyCycle, NumWindows, MobilityStart,"
-                " MobilityStop) VALUES (?, ?, ?, ?)"
-            ),
+            "INSERT INTO ranges (Start, Stop, DutyCycle, NumWindows, MobilityStart,"
+            " MobilityStop) VALUES (?, ?, ?, ?)",
             (
                 quad_low_mz_values,
                 quad_high_mz_values,

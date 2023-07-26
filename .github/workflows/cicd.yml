@@ -1,0 +1,114 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Python package
+
+on:
+  push:
+    branches: [ "main", "release" ]
+  pull_request:
+    branches: [ "main", "release" ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.10"
+    - name: Set up pre-commit
+      run: python -m pip install pre-commit && pre-commit install
+    - name: Run pre-commit
+      run: pre-commit run --all-files
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install ".[test]"
+    - name: Test with pytest
+      run: |
+        pytest
+    - name: Codecov
+      # You may pin to the exact commit or the version.
+      # uses: codecov/codecov-action@eaaf4bedf32dbdc6b720b63067d99c4d77d6047d
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      uses: codecov/codecov-action@v3.1.4
+      with:
+        # Specify whether the Codecov output should be verbose
+        verbose: true # optional
+
+  # publish:
+  #   runs-on: ubuntu-latest
+  #   if: startsWith(github.event_name, 'push') && startsWith(github.ref, 'refs/heads/release')
+  #   needs: [lint, test, docker_test]
+
+  #   steps:
+  #   - uses: actions/checkout@v3
+  #   - name: Set up Python
+  #     uses: actions/setup-python@v3
+  #     with:
+  #       python-version: '3.10'
+  #   - name: Install dependencies
+  #     run: |
+  #       python -m pip install ".[build]"
+
+  #   - name: Set up quarto
+  #     uses: quarto-dev/quarto-actions/setup@v2
+  #   - name: Render README
+  #     run: quarto render README.qmd
+  #   - name: build wheel
+  #     run: python -m build
+  #   - name: pypi-publish
+  #     uses: pypa/gh-action-pypi-publish@v1.8.8
+  #     with:
+  #       # Password for your PyPI user or an access token
+  #       password: ${{ secrets.PYPI_TOKEN }} # optional
+  #       # The target directory for distribution
+  #       packages-dir: dist # optional
+  #       # Show verbose output.
+  #       verbose: true # optional, default is false
+  #       skip-existing: true
+
+  #   - name: Set up Docker Buildx
+  #     uses: docker/setup-buildx-action@v2
+
+  #   - name: Login to the GitHub Container Registry
+  #     uses: docker/login-action@v2
+  #     with:
+  #       registry: ghcr.io
+  #       username: ${{ github.actor }}
+  #       password: ${{ secrets.GITHUB_TOKEN }}
+
+  #   # Docker Setup
+  #   - name: Build Docker image
+  #     id: dockerbuild
+  #     run: |
+  #       docker build -t ghcr.io/talusbio/flimsay:v$(python -c "import flimsay ; print(flimsay.__version__)") .
+
+  #   # Quick test on the docker image
+  #   - name: Test Docker image
+  #     run: |
+  #       docker run --rm -v ${PWD}:/data/ ghcr.io/talusbio/flimsay:v$(python -c "import flimsay ; print(flimsay.__version__)") \
+  #         flimsay fill_blib /data/tests/unit_tests/data/test.blib /data/out.blib
+
+  #   # Publish Docker
+  #   - name: Push the Docker image to the GHCR
+  #     id: ghcr_push
+  #     run: |
+  #         docker push ghcr.io/talusbio/flimsay:v$(python -c "import flimsay ; print(flimsay.__version__)")

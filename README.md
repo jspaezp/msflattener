@@ -133,7 +133,7 @@ erDiagram
         blob MassArray
         int IntensityEncodedLength
         blob IntensityArray
-        float TIC 
+        float TIC
         int IonMobilityArrayEncodedLength
         blob IonMobilityArray
     }

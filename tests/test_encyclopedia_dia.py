@@ -1,5 +1,7 @@
 import sqlite3
+
 import pytest
+
 from msflattener.bruker import get_timstof_data
 from msflattener.encyclopedia import write_encyclopedia
 

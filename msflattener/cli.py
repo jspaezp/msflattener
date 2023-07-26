@@ -2,8 +2,8 @@ import rich_click as click
 from loguru import logger
 
 from .bruker import get_timstof_data
-from .mzml import get_mzml_data, write_mzml
 from .encyclopedia import write_encyclopedia
+from .mzml import get_mzml_data, write_mzml
 
 
 @click.group()

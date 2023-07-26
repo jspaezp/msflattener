@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 import os
 import zlib
-from collections.abc import Generator
+from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
@@ -17,6 +17,8 @@ from lxml import etree
 from psims.mzml.writer import MzMLWriter
 from tqdm.auto import tqdm
 
+from msflattener.base import SCHEMA_DDA, SCHEMA_DIA, yield_scans
+
 ACC_TO_TYPE = {
     "MS:1000519": np.float32,
     "MS:1000520": np.float16,
@@ -24,6 +26,42 @@ ACC_TO_TYPE = {
     "MS:1000522": np.int32,
     "MS:1000523": np.float64,
 }
+
+
+@dataclass
+class SpectrumEntry:
+    """A dataclass to hold the data of a spectrum.
+
+    spec_id : str
+        The spectrum identifier.
+    mz_array : np.ndarray
+    intensity_array : np.ndarray
+    rt_in_seconds : float
+        The retention time in seconds
+    quad_low_isolation : float
+        Lower limit set to the isolation window
+        Will be set to -1 if no isolation is detected
+    quad_high_isolation : float
+        Higher limit set to the isolation window
+        Will be set to -1 if no isolation is detected
+    """
+
+    spec_id: str
+    mz_values: np.ndarray
+    corrected_intensity_values: np.ndarray
+    rt_in_seconds: float
+
+    quad_low_mz_value: float
+    quad_high_mz_value: float
+
+    precursor_mz_value: float
+    precursor_charge: int
+    precursor_mobility: float
+
+    @property
+    def arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the mz and intensity arrays."""
+        return self.mz_values, self.corrected_intensity_values
 
 
 def read(
@@ -58,16 +96,22 @@ def read(
     return spectra
 
 
-def _desc_acc_val(elem: etree.Element, accesion: str) -> str:
+def _desc_acc_val(elem: etree.Element, accesion: str, fallback=None) -> str:
     """Get the value of an element with a given accession."""
     elems = elem.xpath(f"descendant::*[@accession='{accesion}']")
-    out = elems[0].get("value")
+    try:
+        out = elems[0].get("value")
+    except IndexError:
+        if fallback is not None:
+            out = fallback
+        else:
+            raise ValueError(f"Unable to find {accesion} in {elem}")
     return out
 
 
 def _parse_spectrum(  # noqa: C901
     elem: etree.Element,
-) -> tuple[str, np.ndarray, np.ndarray, float, float, float]:
+) -> SpectrumEntry:
     """Parse a mass spectrum.
 
     Parameters
@@ -77,19 +121,8 @@ def _parse_spectrum(  # noqa: C901
 
     Returns
     -------
-    spec_id : str
-        The spectrum identifier.
-    mz_array : np.ndarray
-    intensity_array : np.ndarray
-        The mass spectrum.
-    rt : float
-        The retention time in seconds
-    low_isolation : float
-        Lower limit set to the isolation window
-        Will be set to -1 if no isolation is detected
-    high_isolation : float
-        Higher limit set to the isolation window
-        Will be set to -1 if no isolation is detected
+    SpectrumEntry
+        A dataclass with the spectrum data.
 
     Note:
     This function was originally written by Will Fondrie and JSPP added
@@ -120,6 +153,24 @@ def _parse_spectrum(  # noqa: C901
         low_iso, high_iso = window_center - low_offset, window_center + high_offset
     except StopIteration:
         low_iso, high_iso = -1.0, -1.0
+
+    # Handle isolation windows
+    try:
+        selected_ions = next(elem.iter("{*}selectedIonList"))
+
+        # <cvParam cvRef="PSI-MS" accession="MS:1002815" name="inverse reduced ion mobility" value="1.0954894818867214" unitCvRef="PSI-MS" unitAccession="MS:1002814" unitName="volt-second per square centimeter"/>
+        precursor_mz = float(_desc_acc_val(selected_ions, "MS:1000744"))
+        # <cvParam cvRef="PSI-MS" accession="MS:1000041" name="charge state" value="1"/>
+        precursor_charge = int(_desc_acc_val(selected_ions, "MS:1000041", fallback=-1))
+        # <cvParam cvRef="PSI-MS" accession="MS:1000744" name="selected ion m/z" value="1342.4774971755114" unitCvRef="PSI-MS" unitAccession="MS:1000040" unitName="m/z"/>
+        precursor_mobility = float(
+            _desc_acc_val(selected_ions, "MS:1002815", fallback=-1)
+        )
+
+    except StopIteration:
+        precursor_mz = -1.0
+        precursor_charge = -1
+        precursor_mobility = -1.0
 
     bin_list = next(elem.iter("{*}binaryDataArrayList"))
     # spectrum is m/z array and intensity arrays and rtinseconds.
@@ -165,7 +216,19 @@ def _parse_spectrum(  # noqa: C901
 
         spec[idx] = array
 
-    return spec_id, *spec
+    out = SpectrumEntry(
+        spec_id=spec_id,
+        mz_values=spec[0],
+        corrected_intensity_values=spec[1],
+        rt_in_seconds=spec[2],
+        quad_low_mz_value=spec[3],
+        quad_high_mz_value=spec[4],
+        precursor_mz_value=precursor_mz,
+        precursor_charge=precursor_charge,
+        precursor_mobility=precursor_mobility,
+    )
+
+    return out
 
 
 def get_mzml_data(
@@ -199,6 +262,9 @@ def get_mzml_data(
         "rt_values": [],
         "quad_low_mz_values": [],
         "quad_high_mz_values": [],
+        "mobility_values": [],
+        "precursor_charge": [],
+        "precursor_mz_values": [],
     }
 
     for _, elem in tqdm(
@@ -206,10 +272,33 @@ def get_mzml_data(
         desc="Spectra",
         disable=not progbar,
     ):
-        _spec_id, *arrays = _parse_spectrum(elem)
-        if len(arrays[0]) > min_peaks:
-            for k, v in zip(out, arrays):
-                out[k].append(v)
+        spec = _parse_spectrum(elem)
+        if len(spec.mz_values) > min_peaks:
+            out["mz_values"].append(spec.mz_values.astype(np.float32))
+            out["corrected_intensity_values"].append(
+                spec.corrected_intensity_values.astype(np.float32)
+            )
+            out["rt_values"].append(spec.rt_in_seconds)
+            out["quad_low_mz_values"].append(spec.quad_low_mz_value)
+            out["quad_high_mz_values"].append(spec.quad_high_mz_value)
+            out["mobility_values"].append(spec.precursor_mobility)
+            out["precursor_charge"].append(spec.precursor_charge)
+            out["precursor_mz_values"].append(spec.precursor_mz_value)
+
+    out["precursor_intensity"] = [None] * len(out["mz_values"])
+    # Cast the mobility values to the sizer of the other arrays
+    out["mobility_values"] = [
+        [x] * len(y) for x, y in zip(out["mobility_values"], out["mz_values"])
+    ]
+
+    # If all precursor charges are -1, then it is a DIA dataset
+    if all(x == -1 for x in out["precursor_charge"]):
+        logger.debug("DIA dataset detected")
+        out = pl.DataFrame(
+            {k: v for k, v in out.items() if k in SCHEMA_DIA}, schema=SCHEMA_DIA
+        )
+    else:
+        out = pl.DataFrame(out, schema=SCHEMA_DDA)
 
     return pl.DataFrame(out)
 
@@ -268,8 +357,7 @@ def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, No
         else:
             curr_children.append(row)
 
-    if curr_parent is not None:
-        yield curr_parent, curr_children
+    return out
 
 
 def write_mzml(df: pl.DataFrame, out_path: os.PathLike) -> None:

@@ -120,9 +120,12 @@ write_mzml(two_d_merge, "foo.mzml")
 
 https://bitbucket.org/searleb/encyclopedia/downloads/
 
+NOTE: This schema is not up to date, I am looking for a way to generate it programatically.
+
 ```mermaid
 erDiagram
     precursor {
+        int Fraction
         string SpectrumName "'index=1'"
         int SpectrumIndex "'101'"
         float ScanStartTime "23.1, In Seconds "

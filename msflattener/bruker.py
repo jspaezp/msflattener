@@ -293,7 +293,12 @@ def __unnest_chunk(chunk_dict: dict) -> dict | None:
 
 
 def __centroid_chunk(
-    chunk_dict, mz_distance: float, ims_distance: float, min_neighbors: int = 1
+    chunk_dict,
+    mz_distance: float,
+    ims_distance: float,
+    min_neighbors: int=1,
+    max_peaks:int=5_000,
+    min_intensity:float|int=10,
 ):
     mzs = np.concatenate(chunk_dict["mz_values"])
     prior_len = len(mzs)
@@ -326,12 +331,25 @@ def __centroid_chunk(
         f"(New {new_intensities}, Prior {prior_intensity})"
         f" Diff = {new_intensities - prior_intensity}"
     )
+
+    keep = np.argsort(intensities)[-max_peaks:]
+    mzs = mzs[keep]
+    imss = imss[keep]
+    intensities = intensities[keep]
+
+    if (min_intensity > 0) and len(intensities):
+        keep = np.where(intensities > min_intensity)[0]
+        mzs = mzs[keep]
+        imss = imss[keep]
+        intensities = intensities[keep]
+
     if len(mzs) < 1:
         return
 
     chunk_dict["mz_values"] = mzs
     chunk_dict["corrected_intensity_values"] = intensities.astype(np.float32)
     chunk_dict["mobility_values"] = imss
+
     compression = prior_len / len(mzs)
     signal_representation = new_intensities / prior_intensity
     return chunk_dict, {
@@ -346,6 +364,8 @@ def get_timstof_data(
     progbar: bool = True,
     safe: bool = False,
     centroid: bool = False,
+    max_peaks_per_spectrum: int=5_000,
+    min_intensity: int|float=10,
 ) -> pl.DataFrame:
     """Reads timsTOF data from a file and returns a DataFrame with the data.
 
@@ -362,6 +382,10 @@ def get_timstof_data(
         Will be marginally faster if you disable it.
     centroid : bool, optional
         Whether to centroid the data, by default False
+    max_peaks_per_spectrum : int, optional
+        The maximum number of peaks to keep per spectrum, by default 5_000
+    min_intensity : int, optional
+        The minimum intensity to keep a peak, by default 10
     """
     # The TimsTOF object requires a string as input
     timstof_file = bruker.TimsTOF(str(path), mmap_detector_events=True)
@@ -389,8 +413,18 @@ def get_timstof_data(
         )
         with Pool(processes=cpu_count()) as pool:
             for chunk_dict in pool.imap_unordered(
-                fun,
-                data_generator,
+                partial(
+                    __centroid_chunk,
+                    mz_distance=0.01,
+                    ims_distance=0.02,
+                    min_neighbors=1,
+                    max_peaks=max_peaks_per_spectrum,
+                    min_intensity=min_intensity,
+                ),
+                _iter_timstof_data(
+                    timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
+                ),
+                chunksize=5,
             ):
                 ## Dead code, only left here for debugging purposes
                 ## Or when profiling some of the code.

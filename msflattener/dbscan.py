@@ -75,7 +75,7 @@ def dbscan_1d(
 
 
 # @profile
-def dbscan_nd(
+def _dbscan_nd(
     values_list: list[np.array],
     value_max_dists: list[float],
     min_neighbors: int,
@@ -175,7 +175,7 @@ def dbscan_collapse_multi(
     assert all(len(values_list[0]) == len(x) for x in values_list)
 
     order = np.argsort(-intensities.astype(np.float64))
-    combined_neighbors, used = dbscan_nd(
+    combined_neighbors, used = _dbscan_nd(
         values_list=values_list,
         value_max_dists=value_max_dists,
         min_neighbors=min_neighbors,

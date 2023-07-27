@@ -12,8 +12,7 @@ from numpy.typing import DTypeLike
 from tqdm.auto import tqdm
 
 from .base import SCHEMA_DDA, SCHEMA_DIA, YIELDING_FIELDS
-from .dbscan import dbscan_collapse, dbscan_collapse_multi
-from .utils import _get_breaks_multi
+from .dbscan import dbscan_collapse_multi
 
 
 def __get_nesting_level(x):
@@ -58,7 +57,7 @@ def __iter_dict_arrays(x: dict[str, np.ndarray]):
     assert isinstance(x, dict)
     lengths = {k: len(v) for k, v in x.items()}
     assert (
-        len(set([len(y) for y in x.values()])) == 1
+        len({len(y) for y in x.values()}) == 1
     ), f"All elements should be the same length, got: {lengths}"
 
     for i in range(len(x[list(x.keys())[0]])):
@@ -82,9 +81,7 @@ def __count_chunks(x: dict[str, np.ndarray], breaking_names):
     return len(non_zeros)
 
 
-def _iter_timstof_data(
-    timstof_file: bruker.TimsTOF, min_peaks=15, progbar=True, safe=False
-):
+def _iter_timstof_data(timstof_file: bruker.TimsTOF, progbar=True, safe=False):
     boundaries = [
         (start, end)
         for start, end in zip(
@@ -166,6 +163,7 @@ def _iter_timstof_data(
             raw_indices_sorted=True,
         )
         out = {k: v.astype(np.float32) for k, v in out.items()}
+        out["query_range"] = query_range
         for k, v in context.items():
             out[k] = v
 
@@ -203,6 +201,8 @@ def _iter_timstof_data(
 
         for k, v in out.items():
             if k in YIELDING_FIELDS:
+                if k in chunk_out:
+                    assert np.all(chunk_out[k] == v)
                 chunk_out[k] = v
             else:
                 chunk_out.setdefault(k, []).append(v)
@@ -218,7 +218,6 @@ def _iter_timstof_data(
 
 def __iter_timstof_data_fractioned(
     timstof_file: bruker.TimsTOF,
-    min_peaks=15,
     progbar=True,
     safe=False,
     pushes_per_fraction=20_000,
@@ -296,9 +295,9 @@ def __centroid_chunk(
     chunk_dict,
     mz_distance: float,
     ims_distance: float,
-    min_neighbors: int=1,
-    max_peaks:int=5_000,
-    min_intensity:float|int=10,
+    min_neighbors: int = 1,
+    max_peaks: int = 5_000,
+    min_intensity: float | int = 10,
 ):
     mzs = np.concatenate(chunk_dict["mz_values"])
     prior_len = len(mzs)
@@ -360,12 +359,11 @@ def __centroid_chunk(
 
 def get_timstof_data(
     path: os.PathLike,
-    min_peaks: int = 5,
     progbar: bool = True,
     safe: bool = False,
     centroid: bool = False,
-    max_peaks_per_spectrum: int=5_000,
-    min_intensity: int|float=10,
+    max_peaks_per_spectrum: int = 5_000,
+    min_intensity: int | float = 10,
 ) -> pl.DataFrame:
     """Reads timsTOF data from a file and returns a DataFrame with the data.
 
@@ -407,23 +405,14 @@ def get_timstof_data(
             mz_distance=0.01,
             ims_distance=0.02,
             min_neighbors=1,
+            max_peaks=max_peaks_per_spectrum,
+            min_intensity=min_intensity,
         )
-        data_generator = _iter_timstof_data(
-            timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
-        )
+        iter = (_iter_timstof_data(timstof_file, progbar=progbar, safe=safe),)
         with Pool(processes=cpu_count()) as pool:
             for chunk_dict in pool.imap_unordered(
-                partial(
-                    __centroid_chunk,
-                    mz_distance=0.01,
-                    ims_distance=0.02,
-                    min_neighbors=1,
-                    max_peaks=max_peaks_per_spectrum,
-                    min_intensity=min_intensity,
-                ),
-                _iter_timstof_data(
-                    timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
-                ),
+                fun,
+                iter,
                 chunksize=5,
             ):
                 ## Dead code, only left here for debugging purposes
@@ -452,14 +441,13 @@ def get_timstof_data(
         )
 
     else:
-        # TODO: a good test would be to make sure that
-        # the 'schema' is the same between the centroided and non-centroided
-        # data.
-        for chunk_dict in _iter_timstof_data(
-            timstof_file, min_peaks=min_peaks, progbar=progbar, safe=safe
-        ):
+        for chunk_dict in _iter_timstof_data(timstof_file, progbar=progbar, safe=safe):
             unnested = __unnest_chunk(chunk_dict)
             if unnested is not None:
+                if len(unnested["mz_values"]) < 20:
+                    # logger.info("Skipping chunk with less than 20 peaks")
+                    # logger.debug(f"Ranges skipped: {unnested['query_range']} rt: {unnested['rt_values']}")
+                    continue
                 for k, v in unnested.items():
                     if k in schema:
                         final_out[k].append(v)
@@ -485,129 +473,11 @@ def get_timstof_data(
     return final_out
 
 
-def _merge_ims_simple_chunk(
-    chunk: dict, min_neighbors: int = 3, mz_distance: float = 0.01
-) -> pl.DataFrame:
-    mzs = np.concatenate(chunk["mz_values"])
-    intensities = np.concatenate(chunk["corrected_intensity_values"])
-    in_len = len(mzs)
+if __name__ == "__main__":
+    from pathlib import Path
 
-    mzs, intensities = dbscan_collapse(
-        mzs,
-        intensities=intensities,
-        min_neighbors=min_neighbors,
-        value_max_dist=mz_distance,
-    )
-    out_vals = {}
-    out_vals["mz_values"] = mzs
-    out_vals["corrected_intensity_values"] = intensities
-    out_vals["rt_values"] = chunk["rt_values"][0]
-    out_vals["quad_low_mz_values"] = chunk["quad_low_mz_values"][0]
-    out_vals["quad_high_mz_values"] = chunk["quad_high_mz_values"][0]
-    out_vals["mobility_low_values"] = chunk["mobility_values"].min()
-    out_vals["mobility_high_values"] = chunk["mobility_values"].max()
-    return pl.DataFrame(out_vals), in_len
+    BASE_PATH = Path("/Users/sebastianpaez/tmp")
+    DATA_FILE = "230612_SKNAS_DMSO_06_CHRO_1_DIA_S1-B1_1_1678.d"
 
-
-def merge_ims_simple(
-    df: pl.DataFrame,
-    min_neighbors: int = 3,
-    mz_distance: float = 0.01,
-    progbar: bool = True,
-):
-    df = df.sort(["rt_values", "quad_low_mz_values"])
-    breaks = _get_breaks_multi(
-        df["rt_values"].to_numpy(), df["quad_low_mz_values"].to_numpy()
-    )
-    my_iter = tqdm(
-        zip(breaks[:-1], breaks[1:]),
-        total=len(breaks) - 1,
-        disable=not progbar,
-        desc="Merging in 1d",
-    )
-    out_vals = []
-    skipped = 0
-    total = len(breaks) - 1
-    for start, end in my_iter:
-        chunk = df[start:end]
-        out_chunk, in_len = _merge_ims_simple_chunk(
-            chunk=chunk, min_neighbors=min_neighbors, mz_distance=mz_distance
-        )
-        if len(out_chunk):
-            my_iter.set_postfix({"out_len": len(out_chunk), "in_len": in_len})
-        else:
-            out_vals.append(out_chunk)
-            skipped += 1
-
-    logger.info(
-        f"Finished simple ims merge, skipped {skipped}/{total} spectra for not having"
-        " any peaks"
-    )
-
-    return pl.DataFrame(out_vals)
-
-
-def centroid_ims(
-    df: pl.DataFrame,
-    min_neighbors: int = 3,
-    mz_distance: float = 0.01,
-    ims_distance: float = 0.01,
-    progbar: bool = True,
-) -> pl.DataFrame:
-    df = df.sort(["rt_values", "quad_low_mz_values"])
-    breaks = _get_breaks_multi(
-        df["rt_values"].to_numpy(),
-        df["quad_low_mz_values"].to_numpy(),
-    )
-    if "precursor_charge" in df.columns:
-        schema = SCHEMA_DDA
-    else:
-        schema = SCHEMA_DIA
-
-    final_out = {k: [] for k in schema}
-
-    total = len(breaks) - 1
-    my_iter = tqdm(
-        zip(breaks[:-1], breaks[1:]),
-        total=total,
-        disable=not progbar,
-        desc="Merging in 2d",
-    )
-    skipped = 0
-    for start, end in my_iter:
-        chunk = df[start:end]
-        if len(chunk) == 0:
-            skipped += 1
-            continue
-
-        out_chunk = __centroid_chunk(
-            chunk.to_dict(as_series=False), mz_distance, ims_distance, min_neighbors
-        )
-        if out_chunk is not None:
-            out_chunk, compression = out_chunk
-
-            if len(out_chunk):
-                my_iter.set_postfix(compression)
-                for k in schema:
-                    final_out[k].append(out_chunk[k])
-        else:
-            skipped += 1
-
-    logger.info(
-        f"Finished simple ims merge, skipped {skipped}/{total} spectra for not having"
-        " any peaks"
-    )
-    final_out_f = {}
-    for k, v in final_out.items():
-        if k in schema:
-            if not isinstance(v[0], np.ndarray):
-                final_out_f[k] = np.array(v).flatten()
-
-            else:
-                final_out_f[k] = v
-
-    final_out_f["corrected_intensity_values"] = [
-        x.astype(np.float32) for x in final_out_f["corrected_intensity_values"]
-    ]
-    final_out = pl.DataFrame(final_out_f, schema=schema)
-    return final_out
+    datafile = BASE_PATH / DATA_FILE
+    out = get_timstof_data(datafile, progbar=False, centroid=False, safe=True)

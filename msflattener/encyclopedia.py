@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+from loguru import logger
 from numpy.typing import DTypeLike
 from tqdm.auto import tqdm
 
@@ -31,6 +32,8 @@ CREATE TABLE precursor (
     primary key (SpectrumIndex)
 );
 """
+
+# TODO: implement schemas in either pydantic or sqlalchemy
 
 # TODO write a check to make sure the mobilities are either all null or none null
 RANGES_SCHEMA = """
@@ -120,7 +123,9 @@ def _compress_array(array: np.ndarray, dtype: str) -> bytes:
     Examples
     --------
         >>> _compress_array(np.array([1, 2, 3, 4, 5]), "d")
-        b'x^\xb3\xff\xc0\x00\x06\x0e\x10\x8a\xc1\x81\x03J\x0b@i\x11\x08\r\x00D\xc4\x02\\'
+        b'x^\xb3\xff\xc0\x00\x06\x0e\x10\x8a\xc1\x81\x03\xca\x17\x80\xd2"\x10\x1a\x00D\xc4\x02\\'
+        >>> _compress_array(np.array([1, 2, 3, 4, 5]), "f")
+        b'x^\xb3o``p`\x00b \xe1\x00b/``\x00\x00 \xa0\x03 '
         >>> _extract_array(_compress_array(np.array([1, 2, 3, 4, 5]), "d"), "d")
         array([1., 2., 3., 4., 5.])
         >>> _compress_array(np.array([1, 2, 3, 4, 5]), "i")
@@ -183,6 +188,8 @@ def _write_scan(
     scan_name = f"scan={id}"
     tic = sum(corrected_intensity_values)
 
+    min_mz = min(mz_values) if mz_values else 400
+    max_mz = max(mz_values) if mz_values else 2000
     mz_values = np.array(mz_values, dtype="f")
     corrected_intensity_values = np.array(corrected_intensity_values, dtype="f")
     mobility_values = np.array(mobility_values, dtype="f")
@@ -194,9 +201,9 @@ def _write_scan(
         mobility_values,
     )
 
-    mz_values = _compress_array(mz_values, "d")
-    corrected_intensity_values = _compress_array(corrected_intensity_values, "f")
-    mobility_values = _compress_array(mobility_values, "f")
+    mz_blob = _compress_array(mz_values, "d")
+    intensity_blob = _compress_array(corrected_intensity_values, "f")
+    mobilities_blob = _compress_array(mobility_values, "f")
 
     if quad_low_mz_values < 0:
         assert precursor_id is None
@@ -231,15 +238,15 @@ def _write_scan(
             scan_name,
             id,
             rt_values,
-            len(mz_values),
-            mz_values,
+            len(mz_values) * 2,  # Since this is a double
+            mz_blob,
             len(corrected_intensity_values),
-            corrected_intensity_values,
+            intensity_blob,
             tic,
             len(mobility_values),
-            mobility_values,
-            min(400.0, min(mz_values)),  # TODO replace with actual values ...
-            max(1600.0, max(mz_values)),  # TODO replace with actual values ...
+            mobilities_blob,
+            min(400.0, min_mz),  # TODO replace with actual values ...
+            max(1600.0, max_mz),  # TODO replace with actual values ...
         )
     else:
         assert precursor_id is not None
@@ -278,13 +285,13 @@ def _write_scan(
             scan_name,
             id,
             rt_values,
-            len(mz_values),
-            mz_values,
+            2 * len(mz_values),  # Since this is a double
+            mz_blob,
             len(corrected_intensity_values),
-            corrected_intensity_values,
+            intensity_blob,
             # tic, # Oddly enought here is no TIC in the spectra table
             len(mobility_values),
-            mobility_values,
+            mobilities_blob,
             quad_low_mz_values,
             quad_high_mz_values,
             (quad_high_mz_values + quad_low_mz_values) / 2,
@@ -292,14 +299,10 @@ def _write_scan(
             0,  # PrecursorCharge
         )
 
-    try:
-        curr.execute(
-            input_query,
-            values,
-        )
-    except sqlite3.IntegrityError as e:
-        print(e)
-        raise
+    curr.execute(
+        input_query,
+        values,
+    )
 
 
 def write_scans(df: pl.DataFrame, conn: sqlite3.Connection) -> None:
@@ -310,6 +313,7 @@ def write_scans(df: pl.DataFrame, conn: sqlite3.Connection) -> None:
     for each scan.
 
     """
+    logger.info("Writing scans to database")
     iter = yield_scans(df)
     curr = conn.cursor()
     tic = 0
@@ -359,14 +363,22 @@ def write_ranges(df: pl.DataFrame, conn: sqlite3.Connection) -> None:
     the median RT difference between scans in that range.
 
     """
+    logger.info("Writing ranges table")
     g_df = df.groupby(["quad_high_mz_values", "quad_low_mz_values"])
     ranges_dict = {}
 
     for i, x in g_df:
-        diff = np.diff(x["rt_values"].to_numpy(zero_copy_only=True))
-        min_ims = x["mobility_values"].min()
-        max_ims = x["mobility_values"].max()
-        assert diff.min() >= 0
+        if i[0] < 0:
+            continue
+        diff = np.diff(np.sort(x["rt_values"].to_numpy().copy()))
+        try:
+            min_ims = min([min(y) for y in x["mobility_values"] if len(y)])
+            max_ims = max([max(y) for y in x["mobility_values"] if len(y)])
+        except ValueError:
+            logger.error(f"Error in mobility values for range {i}")
+            logger.error(x["mobility_values"])
+            raise
+        assert diff.min() >= 0, f"diff.min() = {diff.min()}"
 
         med_diff = np.median(diff)
         ranges_dict[i] = {
@@ -431,6 +443,7 @@ def write_encyclopedia(
         conn.execute("PRAGMA locking_mode = EXCLUSIVE")
         conn.execute("PRAGMA cache_size = 1000000;")
         conn.execute("PRAGMA temp_store = MEMORY")
+        write_ranges(df, conn)
         tic = write_scans(df, conn)
         conn.executemany(
             "INSERT INTO main.metadata (Key, Value) VALUES (?, ?)",
@@ -441,7 +454,6 @@ def write_encyclopedia(
                 ("filename", Path(orig_filepath).name),
             ],
         )
-        write_ranges(df, conn)
         conn.executescript(INDEX_SCHEMA)
         conn.commit()
     finally:

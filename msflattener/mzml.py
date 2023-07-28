@@ -231,9 +231,7 @@ def _parse_spectrum(  # noqa: C901
     return out
 
 
-def get_mzml_data(
-    path: os.PathLike, min_peaks: int, progbar: bool = True
-) -> pl.DataFrame:
+def get_mzml_data(path: os.PathLike, progbar: bool = True) -> pl.DataFrame:
     """Reads a mzML file and returns a DataFrame with the spectra.
 
     Parameters
@@ -273,7 +271,7 @@ def get_mzml_data(
         disable=not progbar,
     ):
         spec = _parse_spectrum(elem)
-        if len(spec.mz_values) > min_peaks:
+        if len(spec.mz_values) > 0:
             out["mz_values"].append(spec.mz_values.astype(np.float32))
             out["corrected_intensity_values"].append(
                 spec.corrected_intensity_values.astype(np.float32)
@@ -300,7 +298,7 @@ def get_mzml_data(
     else:
         out = pl.DataFrame(out, schema=SCHEMA_DDA)
 
-    return pl.DataFrame(out)
+    return out
 
 
 def yield_scans(df: pl.DataFrame) -> Generator[tuple[dict, list[dict]], None, None]:

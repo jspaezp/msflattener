@@ -31,6 +31,7 @@ def _check_polars_table(df, acquisition):
         assert df.schema == SCHEMA_DDA
 
     elif acquisition == "DIA":
+        _check_schema_verbose(df.schema, SCHEMA_DIA)
         assert df.schema == SCHEMA_DIA
 
     else:
@@ -48,7 +49,6 @@ def test_bruker_dda(shared_datadir, centroiding):
 
     out = get_timstof_data(
         bruker_dda_path,
-        min_peaks=5,
         progbar=False,
         centroid=centroiding,
         safe=True,
@@ -67,7 +67,6 @@ def test_bruker_dia(shared_datadir):
 
     out = get_timstof_data(
         bruker_dia_path,
-        min_peaks=5,
         progbar=False,
         centroid=False,
         safe=True,
@@ -82,7 +81,6 @@ def test_mzml_dda(shared_datadir):
 
     out = get_mzml_data(
         mzml_dda_path,
-        min_peaks=5,
         progbar=False,
     )
 
@@ -97,10 +95,8 @@ def test_mzml_dia(shared_datadir):
 
     out = get_mzml_data(
         mzml_dia_path,
-        min_peaks=5,
         progbar=False,
     )
 
     assert out is not None
     _check_polars_table(out, "DIA")
-

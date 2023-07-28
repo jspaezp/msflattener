@@ -25,9 +25,6 @@ def cli():
 @click.option("--to_parquet", "out_format", flag_value="parquet", default=True)
 @click.option("--to_dia", "out_format", flag_value="dia", default=True)
 @click.option(
-    "--min_peaks", default=5, help="Minimum number of peaks to keep a spectrum"
-)
-@click.option(
     "--progbar/--no-progbar",
     " /-S",
     default=True,
@@ -38,10 +35,8 @@ def cli():
     default=True,
     help="Whether to centroid the IMS dimension.",
 )
-def bruker(file, output, out_format, min_peaks, progbar, centroid):
-    dat = get_timstof_data(
-        file, min_peaks=min_peaks, progbar=progbar, centroid=centroid
-    )
+def bruker(file, output, out_format, progbar, centroid):
+    dat = get_timstof_data(file, progbar=progbar, centroid=centroid)
     if out_format == "parquet":
         logger.info("Writing parquet")
         dat.write_parquet(output)
@@ -50,7 +45,7 @@ def bruker(file, output, out_format, min_peaks, progbar, centroid):
         write_mzml(dat, output)
     elif out_format == "dia":
         logger.info("Writing encyclopedia dia file")
-        write_encyclopedia(dat, output)
+        write_encyclopedia(dat, output, orig_filepath=file)
     else:
         raise RuntimeError
 
@@ -63,15 +58,14 @@ def bruker(file, output, out_format, min_peaks, progbar, centroid):
     help="The file to read data from!",
 )
 @click.option("--output", type=click.Path(exists=False), help="Name of the output file")
-@click.option("--min_peaks", default=10, help="Number of greetings.")
 @click.option(
     "--progbar/--no-progbar",
     " /-S",
     default=False,
     help="Whether to show progress bars.",
 )
-def mzml(file, output, min_peaks, progbar):
-    dat = get_mzml_data(str(file), min_peaks=min_peaks, progbar=progbar)
+def mzml(file, output, progbar):
+    dat = get_mzml_data(str(file), progbar=progbar)
     dat.write_parquet(output)
 
 

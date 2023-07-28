@@ -291,6 +291,79 @@ def __unnest_chunk(chunk_dict: dict) -> dict | None:
     return chunk_dict
 
 
+def __clean_dangling_precursor_scans(df: pl.DataFrame):
+    """Clean dangling precursor scans.
+
+    I stilld o not understand why BUT there are many instances where consequent MS1
+    Scans in DIA data have significantly less points than the other scans. This
+    function removes those scans.
+
+    In my experience this is noticed as scans with 10-50 peaks after a scan that
+    might have 200,000.
+
+    I believe it is caused when a dangling section of the IMS dimension is not scanned
+    and the instrument does not use the quad filter for it.
+
+    It does not seem to occur in data from out TimsTOF SCP, but it might
+    be a method rather than an instrument issue.
+    """
+    logger.debug("Cleaning dangling precursor scans")
+
+    non_ms1_df = df.filter(pl.col("quad_low_mz_values") > 0)
+    ms1_df = df.filter(pl.col("quad_low_mz_values") < 0)
+    initial_len = len(ms1_df)
+
+    # For ms1 scans, sort by rt_values
+    # Count number of mz_values in each scan
+    # and calculate the ratio vs the next, then remove the ones
+    # that are less than 0.1 of the next scan.
+    # This is done twice in case there are 2 consecutive dangling scans.
+    ms1_df = ms1_df.sort("rt_values").with_columns(
+        n_mz_values=pl.col("mz_values").apply(lambda x: len(x))
+    )
+    ms1_df = ms1_df.with_columns(
+        n_mz_values_next=pl.col("n_mz_values").shift(-1),
+    )
+
+    def __shift_and_filter(df):
+        df = df.with_columns(
+            n_mz_values_next=pl.col("n_mz_values").shift(-1),
+        )
+        df = df.with_columns(
+            n_mz_values_ratio=pl.col("n_mz_values") / pl.col("n_mz_values_next"),
+        )
+        df = df.filter(
+            (pl.col("n_mz_values_ratio") > 0.1)
+            | (pl.col("n_mz_values_ratio").is_null())
+        )
+        return df
+
+    curr_len = initial_len
+    last_len = len(ms1_df)
+    max_iter = 10
+    num_iter = 0
+    while (curr_len != last_len) or (num_iter == 0):
+        num_iter += 1
+        if num_iter > max_iter:
+            raise RuntimeError(
+                "Could not clean dangling scans. This is likely an issue with the data."
+            )
+        curr_len = last_len
+        ms1_df = __shift_and_filter(ms1_df)
+        last_len = len(ms1_df)
+
+    ms1_df = ms1_df.drop("n_mz_values", "n_mz_values_next", "n_mz_values_ratio")
+
+    final_len = len(ms1_df)
+    logger.debug(
+        f"Removed {initial_len - final_len} dangling scans, out of {initial_len} total"
+        " scans."
+    )
+
+    # Finally concatenate the two dataframes back together
+    return pl.concat((ms1_df, non_ms1_df), rechunk=False)
+
+
 def __centroid_chunk(
     chunk_dict,
     mz_distance: float,
@@ -362,7 +435,7 @@ def get_timstof_data(
     progbar: bool = True,
     safe: bool = False,
     centroid: bool = False,
-    max_peaks_per_spectrum: int = 5_000,
+    max_peaks_per_spectrum: int = 50_000,
     min_intensity: int | float = 10,
 ) -> pl.DataFrame:
     """Reads timsTOF data from a file and returns a DataFrame with the data.
@@ -408,7 +481,7 @@ def get_timstof_data(
             max_peaks=max_peaks_per_spectrum,
             min_intensity=min_intensity,
         )
-        iter = (_iter_timstof_data(timstof_file, progbar=progbar, safe=safe),)
+        iter = _iter_timstof_data(timstof_file, progbar=progbar, safe=safe)
         with Pool(processes=cpu_count()) as pool:
             for chunk_dict in pool.imap_unordered(
                 fun,
@@ -424,6 +497,13 @@ def get_timstof_data(
 
                 if chunk_dict is not None:
                     chunk_dict, compression = chunk_dict
+                    chunk_dict["mz_values"] = chunk_dict["mz_values"].astype(np.float32)
+                    chunk_dict["mobility_values"] = chunk_dict[
+                        "mobility_values"
+                    ].astype(np.float32)
+                    chunk_dict["corrected_intensity_values"] = chunk_dict[
+                        "corrected_intensity_values"
+                    ].astype(np.float32)
                     compressions.append(compression)
                     for k in schema:
                         final_out[k].append(chunk_dict[k])
@@ -469,6 +549,7 @@ def get_timstof_data(
         x.astype(np.float32) for x in final_out_f["corrected_intensity_values"]
     ]
     final_out = pl.DataFrame(final_out_f, schema=schema)
+    final_out = __clean_dangling_precursor_scans(final_out)
 
     return final_out
 

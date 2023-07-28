@@ -17,11 +17,10 @@ def test_bruker_dia(shared_datadir, centroiding, tmp_path):
 
     out = get_timstof_data(
         bruker_dia_path,
-        min_peaks=5,
         progbar=False,
         centroid=centroiding,
         safe=True,
     )
 
     outpath = tmp_path / "test_encyclopedia_dia.sqlite.dia"
-    write_encyclopedia(out, outpath)
+    write_encyclopedia(out, outpath, "asdad/foo.d")

@@ -1,18 +1,16 @@
 import math
-import time
 
 import numpy as np
 import polars as pl
 from loguru import logger
 from scipy.spatial import KDTree
-from sklearn.neighbors import KDTree as skKDTree
 from tqdm.auto import tqdm
 
 from .base import SCHEMA_DIA
 from .dbscan import dbscan_collapse_multi
 
 
-def simple_denoise(df: pl.DataFrame, mz_tol: float = 0.01, mobility_tol: float = 0.01):
+def simple_denoise(df: pl.DataFrame, mz_tol: float = 0.01, mobility_tol: float = 0.005):
     """Extremely simple denoising of data.
 
     This function will remove peaks that do not have aneighbor in a contiguous scan
@@ -35,23 +33,10 @@ def simple_denoise(df: pl.DataFrame, mz_tol: float = 0.01, mobility_tol: float =
             ]
         ).T
 
-        # Start counting time and log if there is a big difference
-        start = time.time()
-        skdt = skKDTree(kdtree_arr, leaf_size=leaves)
-        end = time.time()
-
+        # I made a lot of testing and the scipy implementation
+        # is a lot faster in query times when the tree is large.
         kdt = KDTree(kdtree_arr, balanced_tree=False, leafsize=leaves)
-        end2 = time.time()
-
-        ratio = (end - start) / (end2 - end)
-        elap = end2 - start
-        if elap > 0.1 and (ratio > 1.5 or ratio < 0.5):
-            logger.warning(
-                f"KDTree creation time ratio: {ratio:.2f} (sklearn: {end - start:.2f}s,"
-                f" ours: {end2 - end:.2f}s)"
-            )
-
-        return skdt, kdt, kdtree_arr
+        return kdt, kdtree_arr
 
     progbar = tqdm(total=len(df), desc="Simple Denoising")
     out_df_chunks = []
@@ -67,16 +52,13 @@ def simple_denoise(df: pl.DataFrame, mz_tol: float = 0.01, mobility_tol: float =
         last_kdt = None
         curr_kdt = None
 
-        last_skdt = None
-        curr_skdt = None
-
         curr_kdt_arr = None
 
         curr_mzs = np.array(sub_df["mz_values"][0])
         curr_mobilities = np.array(sub_df["mobility_values"][0])
         curr_intensities = np.array(sub_df["corrected_intensity_values"][0])
 
-        next_skdt, next_kdt, next_kdt_arr = _make_kdtree(curr_mzs, curr_mobilities)
+        next_kdt, next_kdt_arr = _make_kdtree(curr_mzs, curr_mobilities)
 
         keep_vals = {
             "mz_values": [],
@@ -100,10 +82,9 @@ def simple_denoise(df: pl.DataFrame, mz_tol: float = 0.01, mobility_tol: float =
             next_mobilities = np.array(sub_df["mobility_values"][i + 1])
             next_intensities = np.array(sub_df["corrected_intensity_values"][i + 1])
 
-            skdt, kdt, kdt_arr = _make_kdtree(next_mzs, next_mobilities)
+            kdt, kdt_arr = _make_kdtree(next_mzs, next_mobilities)
 
             last_kdt, curr_kdt, next_kdt = curr_kdt, next_kdt, kdt
-            last_skdt, curr_skdt, next_skdt = curr_skdt, next_skdt, skdt
             _, curr_kdt_arr, next_kdt_arr = (
                 curr_kdt_arr,
                 next_kdt_arr,
@@ -111,61 +92,27 @@ def simple_denoise(df: pl.DataFrame, mz_tol: float = 0.01, mobility_tol: float =
             )
 
             if not is_first:
-                bundles = last_skdt.query_radius(curr_kdt_arr, r=1, count_only=True)
-                indices_keep_last = np.where(bundles > 0)[0]
-
                 bundles = curr_kdt.query_ball_tree(last_kdt, r=1)
                 # Check if the lists are non-empty
                 # Chacking len(x) > 0 could be more readable but
                 # it might also be slower ...
-                [i for i, x in enumerate(bundles) if x]
+                indices_keep_last = [i for i, x in enumerate(bundles) if x]
 
             if next_kdt is not None:
                 # Time both approaches and see which is faster
-
-                st = time.time()
-                bundles = next_skdt.query_radius(curr_kdt_arr, r=1, count_only=True)
-                indices_keep_next = np.where(bundles > 0)[0]
-                et = time.time()
-
                 bundles = curr_kdt.query_ball_tree(next_kdt, r=1)
-                indices_keep_next_tmp = [i for i, x in enumerate(bundles) if x]
-                et2 = time.time()
-
-                sk_time = et - st
-                scipy_time = et2 - et
-                tt = et2 - st
-                ratio = (et - st) / (et2 - et)
-                if tt > 0.1 and (ratio > 1.5 or ratio < 0.5):
-                    logger.warning(f"Ratio of times: {ratio:.2f}, total time: {tt:.2f}")
-                    # say which is faster
-                    if sk_time < scipy_time:
-                        logger.warning("sklearn is faster")
-                    else:
-                        logger.warning("scipy is faster")
-
-                    logger.info(
-                        f"len(indices_keep_next): {len(indices_keep_next)} /"
-                        f" {len(next_mzs)}"
-                    )
-                    logger.info(
-                        f"len(indices_keep_next_tmp): {len(indices_keep_next_tmp)} /"
-                        f" {len(next_mzs)}"
-                    )
+                indices_keep_next = [i for i, x in enumerate(bundles) if x]
 
             else:
                 logger.error("I am here!!")
                 indices_keep_next = []
 
             if not is_first:
-                # indices_keep = list(set(indices_keep_last + indices_keep_next))
-                indices_keep = np.unique(
-                    np.concatenate([indices_keep_last, indices_keep_next])
-                )
+                indices_keep = list(set(indices_keep_last + indices_keep_next))
                 if len(indices_keep) == 0:
                     logger.warning(
-                        f"No points were kept (out of {len(curr_mzs)}) on {i}th"
-                        " iteration"
+                        f"No points were kept (out of {len(curr_mzs)})"
+                        f" on {i}th/{len(sub_df)} iteration"
                     )
                     logger.debug(f"RT = {sub_df['rt_values'][i]} and group = {group}")
 
